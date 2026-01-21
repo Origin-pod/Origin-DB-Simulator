@@ -55,22 +55,23 @@ src/blocks/
 └── distribution/      # Replication, sharding, consensus
 ```
 
-## The Vision
+## How It Works
 
-### Today (The Boring Timeline)
-1. Have idea for new DB architecture: **Day 1**
-2. Implement storage engine: **Week 2**
-3. Add indexes and query layer: **Week 4**
-4. Build test harness: **Week 6**
-5. Realize design doesn't work: **Week 8**
-6. Start over: **Week 9** 😭
+### The Old Way (Reading)
+1. Read chapter about B-trees: **1 hour**
+2. Understand roughly how they work: **Maybe?**
+3. Read chapter about LSM trees: **1 hour**
+4. Try to remember what B-trees were: **???**
+5. Read about when to use each: **30 minutes**
+6. Still not sure which is better for your use case: **Forever**
 
-### Tomorrow (The Fun Timeline)
-1. Have idea: **9:00 AM**
-2. Drag-drop blocks in visual editor: **9:15 AM**
-3. Run simulated workload: **9:20 AM**
-4. Compare 5 alternatives: **10:00 AM**
-5. Ship validated design: **That afternoon** 🚀
+### The New Way (Building)
+1. Drag a B-tree block onto canvas: **10 seconds**
+2. Add a write-heavy workload: **20 seconds**
+3. Hit run and watch: **10 seconds**
+4. Now try an LSM tree with same workload: **20 seconds**
+5. See the difference visually: **Immediately**
+6. Actually understand the tradeoff: **Finally!**
 
 ## Quick Start
 
