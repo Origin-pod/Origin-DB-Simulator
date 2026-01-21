@@ -90,18 +90,19 @@ cat docs/Modular\ DB\ Builder\ -\ PRD\ \(Shreyas\ Style\).md
 ## Who Is This For?
 
 ### You'll love this if you:
-- Design databases or data systems
-- Think about tradeoffs between consistency and performance at 2am
-- Want to understand why Cassandra made the choices it did
-- Need to evaluate 5 different approaches before building
-- Teach database systems and want better visualizations
-- Just think databases are neat
+- Are reading DDIA or Database Internals and want to *actually* understand it
+- Learn better by doing than by reading
+- Want to build a custom DB for a unique use case but don't know where to start
+- Think databases are interesting but find the textbooks dry
+- Want to understand why databases make the choices they do
+- Wish you could experiment with "what if MongoDB did X instead of Y?"
+- Just think databases are neat and want to play with them
 
 ### You'll hate this if you:
-- Think all databases should be MySQL
-- Don't care about p99 latency
-- Believe visual programming is a toy
-- Already have all the answers
+- Love reading 800-page technical books cover-to-cover
+- Think building things is a waste of time
+- Believe the only way to learn is through pure theory
+- Already understand everything about databases
 
 ## Project Status
 
@@ -112,23 +113,29 @@ We're building the foundation. Check the roadmap:
 - `/docs/Design Document - Modular DB Builder.md` - Technical architecture
 - `/docs/Wireframes - Modular DB Builder.md` - UI mockups
 
-## The Grand Challenge
+## The Dream
 
-Can we make database experimentation as fast as having the idea?
+Can we make learning database internals as fun as using them?
 
-If we succeed, teams will try 10 alternatives before building. Database research will accelerate. Fewer companies will cargo-cult PostgreSQL when they need something different.
+If this works, people won't just read about databases - they'll build them. They'll understand the *why* behind every design decision. They'll stop cargo-culting PostgreSQL and start designing databases that fit their actual use cases.
 
-And maybe, just maybe, someone will finally answer the question: "What if everything was a log?"
+And maybe, just maybe, someone will finally understand what "everything is a log" actually means by building it themselves.
+
+**The best way to understand how something works is to build it yourself. Let's make that actually enjoyable.**
 
 ## Contributing
 
-This is an early-stage project. If you're excited about:
-- Visual programming for systems
-- Database internals
-- Making complex things approachable
-- Building tools that make builders faster
+This is an early-stage project born from frustration with boring textbooks and a desire to learn by building.
+
+If you're excited about:
+- Making learning more hands-on and visual
+- Database internals (or want to understand them better)
+- Building tools that make learning fun
+- The idea that understanding comes from experimentation
 
 ...then you're in the right place. Check `/docs` for the full vision and roadmap.
+
+**This project is as much about the journey of learning as it is about the destination.**
 
 ## License
 
@@ -136,4 +143,4 @@ TBD
 
 ---
 
-*"The best way to predict the future is to build it. The fastest way to build it is to simulate it first."*
+*"What I cannot create, I do not understand." - Richard Feynman*
