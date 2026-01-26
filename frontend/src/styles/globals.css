@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-gray-200;
+  }
+
+  body {
+    @apply bg-canvas-bg text-gray-900 font-sans antialiased;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors;
+    @apply focus:outline-none focus:ring-2 focus:ring-offset-2;
+  }
+
+  .btn-primary {
+    @apply bg-primary-500 text-white hover:bg-primary-600 focus:ring-primary-500;
+  }
+
+  .btn-secondary {
+    @apply bg-gray-100 text-gray-700 hover:bg-gray-200 focus:ring-gray-500;
+  }
+
+  .btn-ghost {
+    @apply bg-transparent text-gray-600 hover:bg-gray-100 focus:ring-gray-500;
+  }
+
+  .panel {
+    @apply bg-white border-gray-200;
+  }
+}
+
+/* React Flow customizations */
+.react-flow__background {
+  background-color: #FAFAFA !important;
+}
+
+.react-flow__minimap {
+  @apply bg-white border border-gray-200 rounded-lg shadow-sm;
+}
+
+.react-flow__controls {
+  @apply bg-white border border-gray-200 rounded-lg shadow-sm;
+}
+
+.react-flow__controls-button {
+  @apply border-b border-gray-200 hover:bg-gray-50;
+}
+
+.react-flow__controls-button:last-child {
+  @apply border-b-0;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-100;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-400;
+}

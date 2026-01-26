@@ -1,0 +1,141 @@
+# Rust
+target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+# Cargo.lock should be committed for binaries, ignored for libraries
+# Uncomment the next line if this is a library crate
+# Cargo.lock
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Testing
+*.profraw
+*.profdata
+
+# Benchmarking
+/benches/target/
+criterion/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+.project
+.settings/
+.classpath
+.factorypath
+
+# Visual Studio Code
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.Trash-*
+
+# Logs
+*.log
+logs/
+*.out
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.cache
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Documentation build
+/book/
+/mdbook/
+
+# Flamegraph
+flamegraph.svg
+perf.data
+perf.data.old
+
+# Coverage
+*.gcno
+*.gcda
+coverage/
+tarpaulin-report.html
+
+# RocksDB data (if used for testing)
+*.sst
+*.log
+MANIFEST-*
+CURRENT
+LOCK
+LOG
+OPTIONS-*
+
+# Database test files
+*.db
+*.sqlite
+*.sqlite3
+test_data/
+
+# Node modules (if using any JS tooling)
+node_modules/
+
+# Python (if using any Python tooling)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+ENV/
+
+# Backup files
+*~
+*.swp
+*.swo
+\#*\#
+
+# Generated documentation
+/doc/
+
+# Profiling
+*.prof
+
+# Local configuration
+local.toml
+.local/

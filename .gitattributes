@@ -1,0 +1,32 @@
+# Git attributes for consistent line endings and diff handling
+
+# Auto detect text files and normalize line endings to LF
+* text=auto eol=lf
+
+# Source code
+*.rs text diff=rust
+*.toml text
+*.md text
+
+# Documentation
+*.txt text
+LICENSE text
+README text
+
+# Scripts
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+
+# Rust specific
+Cargo.lock linguist-generated=true
