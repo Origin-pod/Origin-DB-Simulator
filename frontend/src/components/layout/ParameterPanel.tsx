@@ -1,11 +1,365 @@
-import { X, Settings, Trash2, Info, HelpCircle } from 'lucide-react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { X, Settings, Trash2, Info, HelpCircle, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useCanvasStore } from '@/stores/canvasStore';
-import { CATEGORY_COLORS, DATA_TYPE_COLORS, type BlockNodeData, type PortDefinition } from '@/types';
+import {
+  CATEGORY_COLORS,
+  DATA_TYPE_COLORS,
+  type BlockNodeData,
+  type PortDefinition,
+  type ParameterDefinition,
+  type ParameterConstraints,
+} from '@/types';
 import { getBlockDefinition } from '@/types/blocks';
 
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+interface ValidationResult {
+  valid: boolean;
+  error?: string;
+}
+
+function validateParam(
+  value: string | number | boolean,
+  param: ParameterDefinition,
+): ValidationResult {
+  if (param.type === 'boolean') return { valid: true };
+
+  if (param.type === 'enum') {
+    const opts = param.constraints?.options ?? [];
+    if (opts.length > 0 && !opts.includes(String(value))) {
+      return { valid: false, error: `Must be one of: ${opts.join(', ')}` };
+    }
+    return { valid: true };
+  }
+
+  if (param.type === 'number') {
+    const n = Number(value);
+    if (Number.isNaN(n)) return { valid: false, error: 'Must be a number' };
+    const c = param.constraints;
+    if (c?.min !== undefined && n < c.min)
+      return { valid: false, error: `Minimum value is ${c.min}` };
+    if (c?.max !== undefined && n > c.max)
+      return { valid: false, error: `Maximum value is ${c.max}` };
+    return { valid: true };
+  }
+
+  // string
+  const s = String(value);
+  const c = param.constraints;
+  if (c?.pattern) {
+    try {
+      if (!new RegExp(c.pattern).test(s)) {
+        return { valid: false, error: `Must match pattern: ${c.pattern}` };
+      }
+    } catch {
+      // invalid regex in definition — skip
+    }
+  }
+  return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
+// Tooltip component
+// ---------------------------------------------------------------------------
+
+function Tooltip({
+  param,
+  show,
+  onToggle,
+}: {
+  param: ParameterDefinition;
+  show: boolean;
+  onToggle: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!show) return;
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        onToggle();
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [show, onToggle]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        className="text-gray-400 hover:text-gray-600"
+        onClick={onToggle}
+        title={param.description}
+      >
+        <HelpCircle className="w-3 h-3" />
+      </button>
+      {show && (
+        <div className="absolute right-0 top-5 z-50 w-56 p-3 bg-white rounded-lg shadow-lg border border-gray-200 text-xs">
+          <p className="text-gray-700 mb-1.5">{param.description}</p>
+          <p className="text-gray-500">
+            Default: <span className="font-mono text-gray-700">{String(param.default)}</span>
+          </p>
+          {param.constraints?.min !== undefined && (
+            <p className="text-gray-500 mt-0.5">
+              Range: {param.constraints.min} – {param.constraints.max}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Individual parameter input components
+// ---------------------------------------------------------------------------
+
+function BooleanInput({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={value}
+        onChange={(e) => onChange(e.target.checked)}
+        className="w-4 h-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500 cursor-pointer"
+      />
+      <span className="text-xs text-gray-500">
+        {value ? 'Enabled' : 'Disabled'}
+      </span>
+    </div>
+  );
+}
+
+function EnumInput({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent cursor-pointer"
+    >
+      {options.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function SliderInput({
+  value,
+  constraints,
+  onChange,
+}: {
+  value: number;
+  constraints: ParameterConstraints;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <input
+        type="range"
+        value={value}
+        min={constraints.min}
+        max={constraints.max}
+        step={constraints.step}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary-500"
+      />
+      <div className="flex justify-between text-xs text-gray-500">
+        <span>{constraints.min}</span>
+        <span className="font-medium text-gray-700">{value}</span>
+        <span>{constraints.max}</span>
+      </div>
+    </div>
+  );
+}
+
+function NumberInput({
+  value,
+  constraints,
+  error,
+  onChange,
+}: {
+  value: number;
+  constraints?: ParameterConstraints;
+  error?: string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div>
+      <input
+        type="number"
+        value={value}
+        min={constraints?.min}
+        max={constraints?.max}
+        step={constraints?.step}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className={`w-full px-2 py-1.5 text-sm border rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
+          error ? 'border-red-400' : 'border-gray-200'
+        }`}
+      />
+      {error && <p className="text-xs text-red-500 mt-0.5">{error}</p>}
+    </div>
+  );
+}
+
+function TextInput({
+  value,
+  error,
+  onChange,
+}: {
+  value: string;
+  error?: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`w-full px-2 py-1.5 text-sm border rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
+          error ? 'border-red-400' : 'border-gray-200'
+        }`}
+      />
+      {error && <p className="text-xs text-red-500 mt-0.5">{error}</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Parameter row (label + tooltip + input)
+// ---------------------------------------------------------------------------
+
+function ParameterRow({
+  param,
+  value,
+  onUpdate,
+}: {
+  param: ParameterDefinition;
+  value: string | number | boolean;
+  onUpdate: (name: string, value: string | number | boolean) => void;
+}) {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const [localValue, setLocalValue] = useState(value);
+  const [error, setError] = useState<string | undefined>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  // Sync local state when value changes from outside (e.g. reset)
+  useEffect(() => {
+    setLocalValue(value);
+    setError(undefined);
+  }, [value]);
+
+  const commitValue = useCallback(
+    (v: string | number | boolean) => {
+      const result = validateParam(v, param);
+      if (result.valid) {
+        setError(undefined);
+        onUpdate(param.name, v);
+      } else {
+        setError(result.error);
+      }
+    },
+    [param, onUpdate],
+  );
+
+  // Debounced commit for text and number inputs
+  const debouncedCommit = useCallback(
+    (v: string | number | boolean) => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => commitValue(v), 300);
+    },
+    [commitValue],
+  );
+
+  const handleChange = useCallback(
+    (v: string | number | boolean) => {
+      setLocalValue(v);
+      // Booleans and enums commit immediately; text/number debounce
+      if (param.type === 'boolean' || param.type === 'enum') {
+        commitValue(v);
+      } else if (param.uiHint === 'slider') {
+        // Sliders commit immediately (constrained range)
+        commitValue(v);
+      } else {
+        debouncedCommit(v);
+      }
+    },
+    [param, commitValue, debouncedCommit],
+  );
+
+  const toggleTooltip = useCallback(() => setShowTooltip((s) => !s), []);
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-medium text-gray-700">
+          {param.name}
+        </label>
+        <Tooltip param={param} show={showTooltip} onToggle={toggleTooltip} />
+      </div>
+
+      {param.type === 'boolean' ? (
+        <BooleanInput
+          value={Boolean(localValue)}
+          onChange={(v) => handleChange(v)}
+        />
+      ) : param.type === 'enum' && param.constraints?.options ? (
+        <EnumInput
+          value={String(localValue)}
+          options={param.constraints.options}
+          onChange={(v) => handleChange(v)}
+        />
+      ) : param.uiHint === 'slider' && param.constraints ? (
+        <SliderInput
+          value={Number(localValue)}
+          constraints={param.constraints}
+          onChange={(v) => handleChange(v)}
+        />
+      ) : param.type === 'number' ? (
+        <NumberInput
+          value={Number(localValue)}
+          constraints={param.constraints}
+          error={error}
+          onChange={(v) => handleChange(v)}
+        />
+      ) : (
+        <TextInput
+          value={String(localValue)}
+          error={error}
+          onChange={(v) => handleChange(v)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main ParameterPanel component
+// ---------------------------------------------------------------------------
+
 export function ParameterPanel() {
-  const { nodes, selectedNodeId, setSelectedNode, removeNode } = useCanvasStore();
+  const { nodes, selectedNodeId, setSelectedNode, removeNode, updateNodeData } =
+    useCanvasStore();
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
 
@@ -31,6 +385,24 @@ export function ParameterPanel() {
   const handleDelete = () => {
     removeNode(selectedNode.id);
   };
+
+  const handleParamUpdate = useCallback(
+    (name: string, value: string | number | boolean) => {
+      updateNodeData(selectedNode.id, {
+        parameters: { ...data.parameters, [name]: value },
+      });
+    },
+    [selectedNode.id, data.parameters, updateNodeData],
+  );
+
+  const handleResetDefaults = useCallback(() => {
+    if (!blockDef) return;
+    const defaults: Record<string, string | number | boolean> = {};
+    for (const p of blockDef.parameters) {
+      defaults[p.name] = p.default;
+    }
+    updateNodeData(selectedNode.id, { parameters: defaults });
+  }, [blockDef, selectedNode.id, updateNodeData]);
 
   return (
     <aside className="w-72 bg-white border-l border-gray-200 flex flex-col">
@@ -80,82 +452,33 @@ export function ParameterPanel() {
         {/* Parameters Section */}
         {blockDef && blockDef.parameters.length > 0 && (
           <div className="p-4 border-b border-gray-100">
-            <h4 className="text-sm font-medium text-gray-900 mb-3 flex items-center gap-2">
-              <Settings className="w-4 h-4 text-gray-400" />
-              Configuration
-            </h4>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                <Settings className="w-4 h-4 text-gray-400" />
+                Configuration
+              </h4>
+              <button
+                onClick={handleResetDefaults}
+                className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+                title="Reset all parameters to defaults"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset
+              </button>
+            </div>
             <div className="space-y-3">
               {blockDef.parameters.map((param) => {
                 const value = data.parameters[param.name] ?? param.default;
                 return (
-                  <div key={param.name} className="space-y-1">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-medium text-gray-700">
-                        {param.name}
-                      </label>
-                      <button
-                        className="text-gray-400 hover:text-gray-600"
-                        title={param.description}
-                      >
-                        <HelpCircle className="w-3 h-3" />
-                      </button>
-                    </div>
-                    {param.type === 'boolean' ? (
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(value)}
-                          readOnly
-                          className="w-4 h-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500"
-                        />
-                        <span className="text-xs text-gray-500">
-                          {value ? 'Enabled' : 'Disabled'}
-                        </span>
-                      </div>
-                    ) : param.type === 'enum' && param.constraints?.options ? (
-                      <select
-                        value={String(value)}
-                        disabled
-                        className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-lg bg-gray-50 text-gray-700"
-                      >
-                        {param.constraints.options.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
-                        ))}
-                      </select>
-                    ) : param.uiHint === 'slider' ? (
-                      <div className="space-y-1">
-                        <input
-                          type="range"
-                          value={Number(value)}
-                          min={param.constraints?.min}
-                          max={param.constraints?.max}
-                          step={param.constraints?.step}
-                          disabled
-                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                        />
-                        <div className="flex justify-between text-xs text-gray-500">
-                          <span>{param.constraints?.min}</span>
-                          <span className="font-medium text-gray-700">{value}</span>
-                          <span>{param.constraints?.max}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <input
-                        type={param.type === 'number' ? 'number' : 'text'}
-                        value={String(value)}
-                        readOnly
-                        className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-lg bg-gray-50 text-gray-700"
-                      />
-                    )}
-                  </div>
+                  <ParameterRow
+                    key={param.name}
+                    param={param}
+                    value={value}
+                    onUpdate={handleParamUpdate}
+                  />
                 );
               })}
             </div>
-            <p className="text-xs text-gray-400 mt-3 italic">
-              Editing will be enabled in Milestone 4
-            </p>
           </div>
         )}
 
@@ -186,7 +509,7 @@ export function ParameterPanel() {
                       <span className="text-xs text-gray-400">
                         {port.dataType}
                         {port.required && (
-                          <span className="text-error ml-1">*</span>
+                          <span className="text-red-500 ml-1">*</span>
                         )}
                       </span>
                     </div>

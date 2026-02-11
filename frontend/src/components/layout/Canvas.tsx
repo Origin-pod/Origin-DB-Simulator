@@ -1,4 +1,4 @@
-import { useCallback, type DragEvent } from 'react';
+import { useCallback, useEffect, type DragEvent } from 'react';
 import {
   ReactFlow,
   Background,
@@ -12,9 +12,13 @@ import {
 import '@xyflow/react/dist/style.css';
 
 import { useCanvasStore } from '@/stores/canvasStore';
+import { useDesignStore } from '@/stores/designStore';
+import { useWorkloadStore } from '@/stores/workloadStore';
 import { BlockNode } from '@/components/nodes/BlockNode';
 import { CATEGORY_COLORS, type BlockCategory, type BlockNodeData } from '@/types';
 import { getBlockDefinition } from '@/types/blocks';
+import { validateImport } from '@/lib/persistence';
+import { toast } from '@/stores/toastStore';
 
 // Register custom node types
 const nodeTypes: NodeTypes = {
@@ -30,9 +34,42 @@ interface PaletteBlock {
 }
 
 export function Canvas() {
-  const { nodes, edges, onNodesChange, onEdgesChange, onConnect, addNode, setSelectedNode } =
-    useCanvasStore();
+  const {
+    nodes, edges, onNodesChange, onEdgesChange, onConnect, addNode,
+    setSelectedNode, removeNode, selectedNodeId, undo, redo, canUndo, canRedo,
+  } = useCanvasStore();
   const { screenToFlowPosition } = useReactFlow();
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger when typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      const isMeta = e.metaKey || e.ctrlKey;
+
+      // Cmd/Ctrl+Z = Undo, Cmd/Ctrl+Shift+Z = Redo
+      if (isMeta && e.key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          if (canRedo) redo();
+        } else {
+          if (canUndo) undo();
+        }
+        return;
+      }
+
+      // Delete / Backspace = remove selected node
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedNodeId) {
+        e.preventDefault();
+        removeNode(selectedNodeId);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedNodeId, removeNode, undo, redo, canUndo, canRedo]);
 
   const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -43,6 +80,42 @@ export function Canvas() {
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault();
 
+      // Check if it's a file drop (import design)
+      const files = event.dataTransfer.files;
+      if (files.length > 0) {
+        const file = files[0];
+        if (file.name.endsWith('.json') || file.name.endsWith('.dbsim')) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            try {
+              const parsed = JSON.parse(reader.result as string);
+              const result = validateImport(parsed);
+              if (!result.valid || !result.design) {
+                toast.error(result.error ?? 'Invalid file.');
+                return;
+              }
+              const d = result.design.design;
+              const { saveCurrentCanvas, createDesign, setDesignResult } = useDesignStore.getState();
+              saveCurrentCanvas();
+              const newId = createDesign(d.name);
+              useCanvasStore.getState().loadDesign(d.name, d.nodes, d.edges);
+              if (d.workload) {
+                useWorkloadStore.setState({ workload: d.workload });
+              }
+              if (d.lastResult) {
+                setDesignResult(newId, d.lastResult);
+              }
+              toast.success(`Imported "${d.name}" from file.`);
+            } catch {
+              toast.error('Failed to parse dropped file.');
+            }
+          };
+          reader.readAsText(file);
+          return;
+        }
+      }
+
+      // Otherwise it's a block palette drop
       const data = event.dataTransfer.getData('application/json');
       if (!data) return;
 
@@ -85,7 +158,7 @@ export function Canvas() {
 
       addNode(newNode);
     },
-    [screenToFlowPosition, addNode]
+    [screenToFlowPosition, addNode],
   );
 
   const handleNodeClick = useCallback(
