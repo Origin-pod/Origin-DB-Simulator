@@ -11,3 +11,5 @@ mod port_tests;
 mod parameter_tests;
 #[cfg(test)]
 mod example_blocks;
+#[cfg(test)]
+mod integration;
