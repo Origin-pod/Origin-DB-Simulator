@@ -3,6 +3,10 @@
 //! This module provides the runtime system for executing blocks and managing
 //! the data flow between blocks in a pipeline.
 
+pub mod engine;
+pub mod validation;
+pub mod workload;
+
 use crate::core::BlockId;
 use std::collections::HashMap;
 

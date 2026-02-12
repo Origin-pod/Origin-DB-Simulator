@@ -15,7 +15,12 @@ mod tests {
     use crate::core::block::{Block, ExecutionContext};
     use crate::core::metrics::{Logger, MetricsCollector, StorageContext};
     use crate::core::parameter::ParameterValue;
-    use crate::core::port::{PortValue, Record};
+    use crate::core::port::{Connection, PortValue, Record};
+    use crate::runtime::engine::ExecutionEngine;
+    use crate::runtime::validation::GraphValidator;
+    use crate::runtime::workload::{
+        Distribution, OperationConfig, OperationType, WorkloadConfig, WorkloadGenerator,
+    };
 
     /// Helper: build N records with incrementing ids.
     fn generate_records(n: usize) -> Vec<Record> {
@@ -323,5 +328,274 @@ mod tests {
         for page_id in 0..90 {
             assert!(!buffer.contains(page_id));
         }
+    }
+
+    // ====================================================================
+    // Phase 2 Integration Tests: Engine + Workload + Validation
+    // ====================================================================
+
+    fn conn(
+        id: &str,
+        src_block: &str,
+        src_port: &str,
+        tgt_block: &str,
+        tgt_port: &str,
+    ) -> Connection {
+        Connection::new(
+            id.into(),
+            src_block.into(),
+            src_port.into(),
+            tgt_block.into(),
+            tgt_port.into(),
+        )
+    }
+
+    // ====================================================================
+    // Test 6: Full engine pipeline — HeapFile → BTreeIndex via engine
+    // ====================================================================
+
+    #[tokio::test]
+    async fn test_engine_heap_to_btree() {
+        let mut engine = ExecutionEngine::new();
+        engine.add_block("heap", Box::new(HeapFileBlock::new()));
+        engine.add_block("btree", Box::new(BTreeIndexBlock::new()));
+        engine.add_connection(conn("c1", "heap", "stored", "btree", "records"));
+        engine.set_entry_point("heap");
+
+        engine
+            .initialize_block("heap", HashMap::new())
+            .await
+            .unwrap();
+        engine
+            .initialize_block("btree", HashMap::new())
+            .await
+            .unwrap();
+
+        let records = generate_records(500);
+        let mut input = HashMap::new();
+        input.insert(
+            ("heap".into(), "records".into()),
+            PortValue::Stream(records),
+        );
+
+        let result = engine.execute(input).await;
+
+        assert!(result.success, "Errors: {:?}", result.errors);
+        assert_eq!(result.block_metrics.len(), 2);
+
+        // Verify heap metrics.
+        let heap_metrics = result
+            .block_metrics
+            .iter()
+            .find(|m| m.block_id == "heap")
+            .unwrap();
+        assert_eq!(
+            *heap_metrics.counters.get("records_inserted").unwrap(),
+            500.0
+        );
+
+        // Verify btree metrics.
+        let btree_metrics = result
+            .block_metrics
+            .iter()
+            .find(|m| m.block_id == "btree")
+            .unwrap();
+        assert_eq!(*btree_metrics.counters.get("total_keys").unwrap(), 500.0);
+
+        // Throughput should be positive.
+        assert!(result.metrics.throughput > 0.0);
+    }
+
+    // ====================================================================
+    // Test 7: Engine with workload generator
+    // ====================================================================
+
+    #[tokio::test]
+    async fn test_engine_with_workload_generator() {
+        let mut engine = ExecutionEngine::new();
+        engine.add_block("heap", Box::new(HeapFileBlock::new()));
+        engine.add_block("btree", Box::new(BTreeIndexBlock::new()));
+        engine.add_connection(conn("c1", "heap", "stored", "btree", "records"));
+        engine.set_entry_point("heap");
+
+        engine
+            .initialize_block("heap", HashMap::new())
+            .await
+            .unwrap();
+        engine
+            .initialize_block("btree", HashMap::new())
+            .await
+            .unwrap();
+
+        let config = WorkloadConfig {
+            operations: vec![OperationConfig {
+                op_type: OperationType::Insert,
+                weight: 100,
+            }],
+            distribution: Distribution::Uniform,
+            total_ops: 300,
+            seed: 42,
+        };
+
+        let records = WorkloadGenerator::generate_records(&config);
+        assert_eq!(records.len(), 300);
+
+        let mut input = HashMap::new();
+        input.insert(
+            ("heap".into(), "records".into()),
+            PortValue::Stream(records),
+        );
+
+        let result = engine.execute(input).await;
+        assert!(result.success, "Errors: {:?}", result.errors);
+
+        // All 300 records should flow through both blocks.
+        let heap_m = result
+            .block_metrics
+            .iter()
+            .find(|m| m.block_id == "heap")
+            .unwrap();
+        assert_eq!(*heap_m.counters.get("records_inserted").unwrap(), 300.0);
+    }
+
+    // ====================================================================
+    // Test 8: Validation catches invalid graph through engine
+    // ====================================================================
+
+    #[tokio::test]
+    async fn test_engine_validates_before_execution() {
+        let mut engine = ExecutionEngine::new();
+        engine.add_block("a", Box::new(HeapFileBlock::new()));
+        engine.add_block("b", Box::new(HeapFileBlock::new()));
+        // Create a cycle.
+        engine.add_connection(conn("c1", "a", "stored", "b", "records"));
+        engine.add_connection(conn("c2", "b", "stored", "a", "records"));
+        engine.set_entry_point("a");
+        engine.set_entry_point("b");
+
+        let result = engine.execute(HashMap::new()).await;
+        assert!(!result.success);
+        assert!(
+            result.errors.iter().any(|e| e.contains("cycle")),
+            "Should report cycle: {:?}",
+            result.errors
+        );
+    }
+
+    // ====================================================================
+    // Test 9: Three-block pipeline through engine with buffer
+    // ====================================================================
+
+    #[tokio::test]
+    async fn test_engine_three_block_pipeline() {
+        let mut engine = ExecutionEngine::new();
+        engine.add_block("heap", Box::new(HeapFileBlock::new()));
+        engine.add_block("btree", Box::new(BTreeIndexBlock::new()));
+        engine.add_block("buffer", Box::new(LRUBufferBlock::new()));
+
+        engine.add_connection(conn("c1", "heap", "stored", "btree", "records"));
+        engine.add_connection(conn("c2", "heap", "stored", "buffer", "requests"));
+        engine.set_entry_point("heap");
+
+        engine
+            .initialize_block("heap", HashMap::new())
+            .await
+            .unwrap();
+        engine
+            .initialize_block("btree", HashMap::new())
+            .await
+            .unwrap();
+        engine
+            .initialize_block("buffer", HashMap::new())
+            .await
+            .unwrap();
+
+        let records = generate_records(200);
+        let mut input = HashMap::new();
+        input.insert(
+            ("heap".into(), "records".into()),
+            PortValue::Stream(records),
+        );
+
+        let result = engine.execute(input).await;
+        assert!(result.success, "Errors: {:?}", result.errors);
+        assert_eq!(result.block_metrics.len(), 3);
+
+        // All three blocks should have run and produced metrics.
+        for bm in &result.block_metrics {
+            assert!(bm.execution_time_ms >= 0.0);
+            assert!(!bm.counters.is_empty(), "{} has no counters", bm.block_id);
+        }
+
+        // Buffer should have cache hit/miss info.
+        let buf_m = result
+            .block_metrics
+            .iter()
+            .find(|m| m.block_id == "buffer")
+            .unwrap();
+        let hits = buf_m.counters.get("cache_hits").unwrap_or(&0.0);
+        let misses = buf_m.counters.get("cache_misses").unwrap_or(&0.0);
+        assert_eq!(hits + misses, 200.0);
+    }
+
+    // ====================================================================
+    // Test 10: Workload distributions produce valid records
+    // ====================================================================
+
+    #[tokio::test]
+    async fn test_workload_distributions_all_valid() {
+        for dist in [
+            Distribution::Uniform,
+            Distribution::Zipfian,
+            Distribution::Latest,
+        ] {
+            let config = WorkloadConfig {
+                operations: vec![
+                    OperationConfig {
+                        op_type: OperationType::Insert,
+                        weight: 30,
+                    },
+                    OperationConfig {
+                        op_type: OperationType::Select,
+                        weight: 70,
+                    },
+                ],
+                distribution: dist,
+                total_ops: 500,
+                seed: 99,
+            };
+
+            let ops = WorkloadGenerator::generate(&config);
+            assert_eq!(ops.len(), 500, "Distribution {:?} should generate 500 ops", dist);
+
+            // Every op should convert to a valid Record.
+            for op in &ops {
+                let rec = op.to_record();
+                assert!(rec.data.contains_key("id"));
+                assert!(rec.data.contains_key("_op_type"));
+            }
+        }
+    }
+
+    // ====================================================================
+    // Test 11: Graph validator standalone — fan-out graph
+    // ====================================================================
+
+    #[test]
+    fn test_validator_fanout_graph() {
+        let mut blocks: HashMap<String, Box<dyn Block>> = HashMap::new();
+        blocks.insert("src".into(), Box::new(HeapFileBlock::new()));
+        blocks.insert("idx".into(), Box::new(BTreeIndexBlock::new()));
+        blocks.insert("buf".into(), Box::new(LRUBufferBlock::new()));
+
+        // HeapFile fans out to both BTreeIndex and LRUBuffer.
+        let connections = vec![
+            conn("c1", "src", "stored", "idx", "records"),
+            conn("c2", "src", "stored", "buf", "requests"),
+        ];
+
+        let result = GraphValidator::validate(&blocks, &connections, &["src"]);
+        assert!(result.valid, "Errors: {:?}", result.errors);
+        assert!(result.warnings.is_empty());
     }
 }
