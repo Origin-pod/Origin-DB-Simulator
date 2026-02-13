@@ -83,8 +83,16 @@ export class WASMExecutionEngine implements ExecutionEngine {
     // Map Rust validation result to our frontend type
     return {
       valid: result.valid,
-      errors: result.errors.map((msg) => ({ message: msg })),
-      warnings: result.warnings.map((msg) => ({ message: msg })),
+      errors: result.errors.map((e) => ({
+        message: e.message,
+        nodeId: e.nodeId,
+        suggestion: e.suggestion,
+      })),
+      warnings: result.warnings.map((w) => ({
+        message: w.message,
+        nodeId: w.nodeId,
+        suggestion: w.suggestion,
+      })),
     };
   }
 

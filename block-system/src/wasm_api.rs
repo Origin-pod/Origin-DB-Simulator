@@ -145,10 +145,19 @@ struct ErrorResponse {
 }
 
 #[derive(Serialize)]
+struct ValidationItemResponse {
+    message: String,
+    #[serde(rename = "nodeId", skip_serializing_if = "Option::is_none")]
+    node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestion: Option<String>,
+}
+
+#[derive(Serialize)]
 struct ValidationResponse {
     valid: bool,
-    errors: Vec<String>,
-    warnings: Vec<String>,
+    errors: Vec<ValidationItemResponse>,
+    warnings: Vec<ValidationItemResponse>,
 }
 
 #[derive(Serialize)]
@@ -579,13 +588,25 @@ pub fn validate() -> String {
     }) {
         Ok(v) => serde_json::to_string(&ValidationResponse {
             valid: v.valid,
-            errors: v.errors.iter().map(|e| e.message.clone()).collect(),
-            warnings: v.warnings.iter().map(|w| w.message.clone()).collect(),
+            errors: v.errors.iter().map(|e| ValidationItemResponse {
+                message: e.message.clone(),
+                node_id: e.node_id.clone(),
+                suggestion: e.suggestion.clone(),
+            }).collect(),
+            warnings: v.warnings.iter().map(|w| ValidationItemResponse {
+                message: w.message.clone(),
+                node_id: w.node_id.clone(),
+                suggestion: w.suggestion.clone(),
+            }).collect(),
         })
         .unwrap_or_default(),
         Err(e) => serde_json::to_string(&ValidationResponse {
             valid: false,
-            errors: vec![e],
+            errors: vec![ValidationItemResponse {
+                message: e,
+                node_id: None,
+                suggestion: None,
+            }],
             warnings: vec![],
         })
         .unwrap_or_default(),

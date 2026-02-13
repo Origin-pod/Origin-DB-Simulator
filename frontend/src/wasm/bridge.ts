@@ -20,10 +20,16 @@ import type {
 // Validation result from Rust (matches RustValidationResult in types.ts)
 // ---------------------------------------------------------------------------
 
+interface BridgeValidationItem {
+  message: string;
+  nodeId?: string;
+  suggestion?: string;
+}
+
 interface BridgeValidationResult {
   valid: boolean;
-  errors: string[];
-  warnings: string[];
+  errors: BridgeValidationItem[];
+  warnings: BridgeValidationItem[];
 }
 
 // ---------------------------------------------------------------------------
