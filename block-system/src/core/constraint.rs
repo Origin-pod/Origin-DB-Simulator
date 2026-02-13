@@ -363,15 +363,21 @@ fn num_cpus() -> usize {
 /// Estimate available memory (placeholder implementation)
 fn estimate_available_memory() -> usize {
     // In a real implementation, this would query system information
-    // For now, return a reasonable default (8GB)
-    8 * 1024 * 1024 * 1024
+    // For now, return a reasonable default (8GB on 64-bit, 1GB on 32-bit/wasm)
+    #[cfg(target_pointer_width = "64")]
+    { 8 * 1024 * 1024 * 1024 }
+    #[cfg(not(target_pointer_width = "64"))]
+    { 1024 * 1024 * 1024 }
 }
 
 /// Estimate available disk space (placeholder implementation)
 fn estimate_available_disk() -> usize {
     // In a real implementation, this would query filesystem information
-    // For now, return a reasonable default (100GB)
-    100 * 1024 * 1024 * 1024
+    // For now, return a reasonable default (100GB on 64-bit, 2GB on 32-bit/wasm)
+    #[cfg(target_pointer_width = "64")]
+    { 100 * 1024 * 1024 * 1024 }
+    #[cfg(not(target_pointer_width = "64"))]
+    { 2 * 1024 * 1024 * 1024 }
 }
 
 #[cfg(test)]

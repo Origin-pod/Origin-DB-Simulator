@@ -100,6 +100,33 @@ impl ExecutionEngine {
         self.entry_points.push(block_id.into());
     }
 
+    /// Clear all entry points.
+    pub fn clear_entry_points(&mut self) {
+        self.entry_points.clear();
+    }
+
+    /// Auto-detect entry points: blocks that have no incoming connections.
+    pub fn auto_detect_entry_points(&mut self) {
+        use std::collections::HashSet;
+        let targets: HashSet<&str> = self
+            .connections
+            .iter()
+            .map(|c| c.target_block_id.as_str())
+            .collect();
+
+        self.entry_points = self
+            .blocks
+            .keys()
+            .filter(|id| !targets.contains(id.as_str()))
+            .cloned()
+            .collect();
+    }
+
+    /// Get current entry points.
+    pub fn entry_points(&self) -> &[String] {
+        &self.entry_points
+    }
+
     /// Initialize a block with parameters.
     pub async fn initialize_block(
         &mut self,
