@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 
 export default defineConfig(({ mode }) => ({
-  base: mode === 'production' ? '/Origin-DB-Simulator/' : '/',
+  base: mode === 'production' ? '/dbsim/' : '/',
   plugins: [react()],
   resolve: {
     alias: {
