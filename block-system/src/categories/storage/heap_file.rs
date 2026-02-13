@@ -29,7 +29,7 @@ use std::collections::HashMap;
 
 use crate::categories::TupleId;
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -129,11 +129,39 @@ impl HeapFileBlock {
                 .into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A heap file is the simplest table storage structure. Records are \
-                           appended to pages in insertion order with no particular sorting."
+                overview: "A heap file is the simplest and most fundamental table storage structure \
+                           used in relational databases. Records are appended to fixed-size pages \
+                           in insertion order with no particular sorting or clustering. A free-space \
+                           map (FSM) tracks available room on each page so that inserts can quickly \
+                           find a page with enough space without scanning every page.\n\n\
+                           In the context of a database system, the heap file is the default \
+                           storage layer that sits beneath indexes. Indexes point back to heap \
+                           pages via tuple identifiers (TupleIds). When no index is available, the \
+                           database must perform a sequential scan over the entire heap to find \
+                           matching rows.\n\n\
+                           Think of a heap file like a notebook where you write entries on the next \
+                           available line. Finding a specific entry requires reading from the \
+                           beginning, but writing a new entry is instant. Over time, crossed-out \
+                           (deleted) entries waste space until you rewrite the notebook (vacuum)."
                     .into(),
-                algorithm: "Insert: find a page with space via free-space map, append slot. \
-                            Scan: iterate all pages, skip dead slots. Delete: mark slot dead."
+                algorithm: "INSERT:\n  1. Estimate record size from serialized data\n  \
+                           2. Consult free-space map to find a page with enough room\n  \
+                           3. If no page has room, allocate a new page\n  \
+                           4. Append record to the first available slot on that page\n  \
+                           5. Update used_bytes on the page\n  \
+                           6. Return TupleId(page_id, slot_id)\n\n\
+                           LOOKUP (by TupleId):\n  \
+                           1. Go directly to pages[page_id].slots[slot_id]\n  \
+                           2. If slot is marked dead, return None\n  \
+                           3. Otherwise return the record\n\n\
+                           SEQUENTIAL SCAN:\n  \
+                           1. For each page in pages[]:\n    \
+                              For each slot in page.slots[]:\n      \
+                              If slot is not dead, emit record\n  \
+                           2. Cost: reads every page including dead slots\n\n\
+                           DELETE:\n  \
+                           1. Mark slot as is_dead = true (soft delete)\n  \
+                           2. Space is not reclaimed until VACUUM/compaction"
                     .into(),
                 complexity: Complexity {
                     time: "Insert O(1) amortized, Scan O(n), Point lookup O(n) without index"
@@ -144,15 +172,83 @@ impl HeapFileBlock {
                     "Default table storage when no specific ordering is needed".into(),
                     "Write-heavy workloads where insert speed matters most".into(),
                     "Staging area before records are indexed".into(),
+                    "Append-only logging and audit trails".into(),
+                    "Bulk data loading where insert throughput is critical".into(),
                 ],
                 tradeoffs: vec![
                     "Fast inserts but slow point lookups without an index".into(),
                     "Deletes cause fragmentation over time".into(),
                     "Sequential scans read dead tuples until vacuumed".into(),
+                    "No ordering guarantees — range queries are inefficient without an index".into(),
+                    "Fill factor trades insert density for update-friendliness".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL heap tables".into(),
-                    "MySQL InnoDB clustered index leaf pages (conceptually similar)".into(),
+                    "PostgreSQL heap files — default table storage, 8KB pages, MVCC with dead tuples".into(),
+                    "MySQL InnoDB clustered index leaf pages (conceptually similar but ordered by PK)".into(),
+                    "SQLite B-tree leaf pages — though SQLite uses a B-tree for the table itself".into(),
+                ],
+                motivation: "Without a heap file, the database has no place to actually store row data. \
+                             The heap file solves the fundamental problem of mapping logical records to \
+                             physical pages on disk. It provides the simplest possible contract: give me \
+                             a record, I will store it and hand you back a stable TupleId you can use to \
+                             retrieve it later.\n\n\
+                             Without this structure, every insert would require finding sorted position \
+                             (expensive), and every storage engine would need complex ordering logic. The \
+                             heap file decouples storage from ordering, letting indexes handle the sorting \
+                             concern separately."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("page_size".into(),
+                     "Controls the size of each page in bytes. Larger pages (e.g., 16384 or 32768) \
+                      mean fewer pages overall and fewer I/O operations for sequential scans, but \
+                      each page read transfers more data even if you only need one record. Smaller \
+                      pages (e.g., 512 or 1024) reduce wasted I/O for point lookups but increase \
+                      metadata overhead and page count. Recommended: 4096-8192 for general OLTP, \
+                      16384-32768 for scan-heavy analytical workloads. Default is 8192 (8KB), \
+                      matching PostgreSQL's default."
+                         .into()),
+                    ("fill_factor".into(),
+                     "Controls what fraction of each page is filled before a new page is allocated. \
+                      A fill factor of 1.0 packs pages completely, maximizing space efficiency but \
+                      leaving no room for in-place updates. A lower value like 0.7 leaves 30% free \
+                      space on each page, which is useful if you expect frequent UPDATEs that increase \
+                      row size — the updated row can stay on the same page instead of being moved. \
+                      Recommended: 0.9-1.0 for append-only/read-heavy tables, 0.7-0.8 for tables \
+                      with frequent updates. Minimum is 0.1 (very wasteful), maximum is 1.0."
+                         .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "clustered-storage".into(),
+                        comparison: "Clustered storage keeps records sorted by a key, making range \
+                                     scans on that key very fast. Choose clustered over heap when your \
+                                     primary access pattern is range queries on a specific column. \
+                                     Choose heap when you need maximum insert throughput and will rely \
+                                     on separate indexes for lookups."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "columnar-storage".into(),
+                        comparison: "Columnar storage decomposes rows into columns, which is ideal \
+                                     for analytical queries that read only a few columns from many rows. \
+                                     Choose columnar for OLAP/warehouse workloads. Choose heap for OLTP \
+                                     workloads that read/write entire rows."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "lsm-tree-storage".into(),
+                        comparison: "LSM trees buffer writes in memory and flush sorted runs to disk, \
+                                     achieving even higher write throughput than heap files but at the \
+                                     cost of read amplification. Choose LSM for extreme write-heavy \
+                                     workloads (logging, time-series). Choose heap for simpler, \
+                                     general-purpose row storage."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What happens to query performance as fragmentation increases in a heap file?".into(),
+                    "How does the free-space map decide which page to use for a new record?".into(),
+                    "Why do databases use a separate VACUUM process instead of immediately reclaiming space on delete?".into(),
                 ],
             },
             references: vec![Reference {

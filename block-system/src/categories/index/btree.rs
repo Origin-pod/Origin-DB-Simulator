@@ -31,7 +31,7 @@ use std::collections::HashMap;
 
 use crate::categories::TupleId;
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -140,15 +140,46 @@ impl BTreeIndexBlock {
             description: "Balanced tree index for point lookups and ordered range scans".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A B-tree keeps keys sorted across a balanced, multi-way tree. \
-                           Lookups, inserts, and deletes are all O(log n) because the tree \
-                           depth grows logarithmically with the number of keys."
+                overview: "A B-tree is a self-balancing, multi-way search tree that keeps keys in \
+                           sorted order across a hierarchy of nodes. It is the most widely used \
+                           index structure in relational databases — virtually every database engine \
+                           uses B-trees (or the B+ tree variant) as their default index type. When \
+                           you write CREATE INDEX in PostgreSQL, MySQL, or SQL Server, you get a \
+                           B-tree.\n\n\
+                           The key property of a B-tree is that its depth grows logarithmically \
+                           with the number of keys. With a fanout of 128, a tree holding 100 \
+                           million keys is only about 3-4 levels deep. Since each level requires \
+                           one page read, a point lookup touches only 3-4 pages — compared to \
+                           scanning millions of pages in a heap file.\n\n\
+                           Think of a B-tree like the index in the back of a textbook. The top \
+                           level gives you letter ranges (A-F, G-L, ...), the next level narrows \
+                           to specific letter combinations, and the leaves point to actual page \
+                           numbers. Finding any entry requires flipping through only a few levels \
+                           of the index, not scanning every page of the book."
                     .into(),
-                algorithm: "Insert: walk from root to correct leaf, insert key. If the leaf \
-                            overflows (> fanout entries), split it and push the median key \
-                            up to the parent. Repeat splits upward as needed. Lookup: binary \
-                            search at each level. Range scan: find start leaf, walk the \
-                            linked leaf chain."
+                algorithm: "INSERT:\n  \
+                           1. Start at the root node\n  \
+                           2. At each internal node, binary search to find which child to descend into\n  \
+                           3. Repeat until reaching a leaf node\n  \
+                           4. Insert the (key, TupleId) entry in sorted position within the leaf\n  \
+                           5. If the leaf now has > fanout entries (overflow):\n    \
+                              a. Split the leaf at the median\n    \
+                              b. Left half stays, right half becomes a new leaf node\n    \
+                              c. Push the median key up to the parent internal node\n    \
+                              d. If the parent also overflows, split it recursively\n    \
+                              e. If the root splits, create a new root (tree grows taller)\n  \
+                           6. Update next_leaf pointers to maintain the leaf chain\n\n\
+                           POINT LOOKUP:\n  \
+                           1. Start at root, binary search keys at each level\n  \
+                           2. Descend to the appropriate child\n  \
+                           3. At the leaf, scan entries for an exact match\n  \
+                           4. Total pages read = tree depth (typically 3-4)\n\n\
+                           RANGE SCAN (start_key to end_key):\n  \
+                           1. Descend from root to the leaf containing start_key\n  \
+                           2. Scan entries in the leaf where key >= start_key\n  \
+                           3. Follow next_leaf pointers to continue scanning\n  \
+                           4. Stop when key > end_key or leaf chain ends\n  \
+                           5. All results are returned in sorted order"
                     .into(),
                 complexity: Complexity {
                     time: "O(log_f n) lookup/insert where f = fanout".into(),
@@ -158,15 +189,81 @@ impl BTreeIndexBlock {
                     "Primary key indexes".into(),
                     "Range queries (BETWEEN, ORDER BY)".into(),
                     "Unique constraint enforcement".into(),
+                    "Composite indexes for multi-column lookups (e.g., WHERE a = 1 AND b > 5)".into(),
+                    "Any workload needing both point lookups and ordered scans".into(),
                 ],
                 tradeoffs: vec![
                     "Higher fanout → shallower tree but more comparisons per node".into(),
                     "Writes cause node splits which are expensive".into(),
                     "Not ideal for high-cardinality write-heavy workloads (consider LSM)".into(),
+                    "Each index adds overhead to every INSERT/UPDATE/DELETE on the table".into(),
+                    "B-trees on disk suffer from random I/O for updates; buffer pools help mitigate this".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL B-tree indexes (default CREATE INDEX)".into(),
-                    "InnoDB secondary indexes".into(),
+                    "PostgreSQL B-tree indexes — default CREATE INDEX type, supports all comparison operators".into(),
+                    "InnoDB secondary indexes — B-tree leaves store the primary key value, not a page pointer".into(),
+                    "SQLite B-tree — both table storage and indexes use B-trees internally".into(),
+                    "Oracle B-tree indexes — default index type, supports index-organized tables".into(),
+                ],
+                motivation: "Without an index, finding a specific row in a table requires scanning \
+                             every single page — a sequential scan that is O(n). For a table with \
+                             10 million rows, this means reading tens of thousands of pages from disk \
+                             just to find one record.\n\n\
+                             The B-tree solves this by maintaining a sorted, balanced tree structure \
+                             that narrows the search space exponentially at each level. A lookup in a \
+                             10-million-row table with fanout 128 touches only ~3 pages instead of \
+                             ~50,000 pages. This is the difference between a query completing in \
+                             microseconds versus seconds."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("fanout".into(),
+                     "The maximum number of keys per node (also called the order of the B-tree). \
+                      Higher fanout means each node holds more keys, making the tree shallower \
+                      (fewer levels = fewer page reads per lookup). However, within each node, \
+                      more keys means more comparisons during binary search. In practice, the \
+                      fanout is determined by the page size and key size: a 4KB page with 32-byte \
+                      keys can hold ~128 keys. Recommended: 64-256 for most workloads. Very low \
+                      values (3-8) are useful for testing and visualizing tree behavior. \
+                      Range: 3-1024. Default is 128."
+                         .into()),
+                    ("key_column".into(),
+                     "The column to build the index on. This should be the column most frequently \
+                      used in WHERE clauses, JOIN conditions, or ORDER BY. The column values must \
+                      be comparable (numbers or strings). For composite indexes, you would create \
+                      multiple B-tree blocks or use a concatenated key. Default is 'id'."
+                         .into()),
+                    ("unique".into(),
+                     "When enabled, the index rejects duplicate key values on insert, effectively \
+                      enforcing a UNIQUE constraint. This is how databases implement PRIMARY KEY \
+                      and UNIQUE constraints — via a unique B-tree index. When disabled, multiple \
+                      records can have the same key value. Default is false."
+                         .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "hash-index".into(),
+                        comparison: "Hash indexes provide O(1) average-case point lookups, which is \
+                                     faster than B-tree's O(log n) for exact equality queries. However, \
+                                     hash indexes cannot perform range scans or return results in sorted \
+                                     order. Choose hash when you only need WHERE id = ? lookups. Choose \
+                                     B-tree when you also need range queries, ORDER BY, or sorted output."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "covering-index".into(),
+                        comparison: "A covering index is a B-tree that stores additional column values \
+                                     alongside the key, enabling index-only scans without touching the \
+                                     base table. Choose a plain B-tree when you only need the key for \
+                                     lookups. Choose a covering index when your queries frequently \
+                                     SELECT columns that could be included in the index to avoid heap \
+                                     lookups."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "How does changing the fanout from 4 to 128 affect tree depth and lookup performance?".into(),
+                    "Why do B-trees link leaf nodes together, and how does this help range scans?".into(),
+                    "What is the difference between a B-tree and a B+ tree, and which do most databases actually use?".into(),
                 ],
             },
             references: vec![Reference {

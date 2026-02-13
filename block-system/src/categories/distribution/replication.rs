@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -85,15 +85,38 @@ impl ReplicationBlock {
             description: "Writes data to multiple replicas with configurable consistency".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "Replication copies data to multiple nodes for fault tolerance and \
-                           availability. The consistency level determines how many replicas \
-                           must acknowledge a write before it's considered successful. This \
-                           is the core of the CAP theorem — you trade consistency for \
-                           availability and partition tolerance."
+                overview: "Replication copies data to multiple nodes (replicas) to provide fault tolerance \
+                           and high availability. If one node fails, the data is still accessible from other \
+                           replicas. The consistency level determines how many replicas must acknowledge a \
+                           write before it is considered successful — this is the fundamental trade-off at \
+                           the heart of the CAP theorem.\n\n\
+                           In a distributed database, replication works alongside partitioning. Partitioning \
+                           splits data across nodes for scalability; replication copies each partition to \
+                           multiple nodes for durability. Together, they give you a system that can survive \
+                           node failures while handling more data than any single machine.\n\n\
+                           Think of replication like making photocopies of an important document and storing \
+                           them in different buildings. If one building catches fire, you still have copies \
+                           elsewhere. The 'consistency level' is how many buildings must confirm receipt \
+                           before you consider the document safely stored. Requiring all buildings (ALL) is \
+                           safest but slowest. Requiring just one (ONE) is fastest but riskiest. Requiring \
+                           a majority (QUORUM) is the common middle ground."
                     .into(),
-                algorithm: "On write: send to all R replicas. Wait for acks based on consistency \
-                            level. ONE = 1 ack, QUORUM = ⌊R/2⌋+1 acks, ALL = R acks. \
-                            Async mode sends to one replica and propagates to others in background."
+                algorithm: "WRITE(record):\n  \
+                           1. Send write to ALL R replicas\n  \
+                           2. Wait for acks based on consistency level:\n     \
+                              ONE:    wait for 1 ack (fastest, weakest)\n     \
+                              QUORUM: wait for floor(R/2) + 1 acks\n     \
+                              ALL:    wait for R acks (slowest, strongest)\n  \
+                           3. If required acks received: return SUCCESS\n  \
+                           4. If timeout before required acks: return FAILURE\n\n\
+                           ASYNC MODE:\n  \
+                           1. Write to primary replica, ack immediately\n  \
+                           2. Propagate to other replicas in background\n  \
+                           3. Risk: if primary fails before propagation, data is lost\n\n\
+                           READ(key, consistency_level):\n  \
+                           1. Read from R replicas (or subset based on CL)\n  \
+                           2. If QUORUM reads + QUORUM writes: R+W > N guarantees\n     \
+                              at least one replica has the latest write (linearizable)"
                     .into(),
                 complexity: Complexity {
                     time: "O(R) per write where R is replication factor; quorum latency = max of fastest ⌊R/2⌋+1 replicas".into(),
@@ -104,6 +127,8 @@ impl ReplicationBlock {
                     "MongoDB replica sets: primary + secondaries".into(),
                     "DynamoDB replicates across 3 AZs automatically".into(),
                     "PostgreSQL streaming replication for hot standby".into(),
+                    "Disaster recovery — maintaining replicas in geographically separate data centers".into(),
+                    "Read scaling — distributing read load across multiple replicas".into(),
                 ],
                 tradeoffs: vec![
                     "Higher replication factor = better durability but more storage and write latency".into(),
@@ -111,11 +136,67 @@ impl ReplicationBlock {
                     "ONE consistency = low latency but stale reads possible".into(),
                     "QUORUM read + QUORUM write = linearizable consistency (R+W > N)".into(),
                     "Async replication = lower latency but data loss risk on failure".into(),
+                    "Cross-datacenter replication adds significant latency but protects against regional outages".into(),
+                    "Conflict resolution needed for multi-leader replication (last-write-wins, CRDTs, or manual)".into(),
                 ],
                 examples: vec![
-                    "Cassandra: replication_factor=3, consistency=QUORUM".into(),
-                    "MongoDB: 3-member replica set with write concern 'majority'".into(),
-                    "DynamoDB: always replicates to 3 AZs".into(),
+                    "Cassandra: replication_factor=3, consistency=QUORUM — tunable per query".into(),
+                    "MongoDB: 3-member replica set with write concern 'majority' and read preference 'secondaryPreferred'".into(),
+                    "DynamoDB: always replicates across 3 AZs, global tables for cross-region replication".into(),
+                    "PostgreSQL: streaming replication with synchronous_commit for zero-data-loss standby".into(),
+                ],
+                motivation: "Without replication, a single node failure means data loss and downtime. If a \
+                             hard drive fails or a server crashes, any data stored only on that machine is \
+                             gone. For a production database serving users, even minutes of downtime can mean \
+                             significant revenue loss and broken trust.\n\n\
+                             Replication provides both durability (data survives hardware failures) and \
+                             availability (the system keeps serving requests even when nodes are down). The \
+                             trade-off is the cost of maintaining multiple copies: more storage, more write \
+                             latency (waiting for acks), and the complexity of keeping replicas in sync."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("replication_factor".into(),
+                     "The number of copies of each piece of data maintained across the cluster. A replication \
+                      factor of 3 means every record exists on 3 different nodes. Higher values provide \
+                      better durability (can survive more simultaneous node failures) but use proportionally \
+                      more storage and increase write latency. Industry standard is 3 for most production \
+                      systems (Cassandra, DynamoDB, MongoDB). A factor of 5 or 7 is used for critical data \
+                      or systems spanning multiple data centers. Recommended: 3 for most workloads."
+                        .into()),
+                    ("consistency_level".into(),
+                     "Determines how many replicas must acknowledge a write before it is considered \
+                      successful. 'one' gives lowest latency but risks stale reads and data loss. 'quorum' \
+                      (majority) provides a good balance — with RF=3, quorum requires 2 acks. 'all' provides \
+                      strongest consistency but any single slow or failed replica blocks the entire write. \
+                      The key insight: if quorum_reads + quorum_writes > replication_factor, you get \
+                      linearizability (strong consistency). Recommended: 'quorum' for most use cases."
+                        .into()),
+                    ("async_replication".into(),
+                     "When enabled, the write is acknowledged after reaching only the primary replica, and \
+                      other replicas receive the data asynchronously in the background. This minimizes write \
+                      latency but introduces a window where data exists on only one node — if that node \
+                      fails before propagation completes, the data is lost. PostgreSQL's synchronous_commit=off \
+                      is similar. Recommended: false (synchronous) for critical data, true for high-throughput \
+                      scenarios where some data loss is acceptable (e.g., logging, analytics ingestion)."
+                        .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "sharding".into(),
+                        comparison: "Sharding (partitioning) and replication solve different problems and are \
+                                     usually used together. Sharding splits data across nodes to handle more \
+                                     data than one machine can store — each shard holds a different subset of \
+                                     the data. Replication copies the same data to multiple nodes for fault \
+                                     tolerance. In practice, a distributed database does both: each shard is \
+                                     replicated to multiple nodes. For example, Cassandra with RF=3 and 12 \
+                                     nodes stores each partition on 3 of the 12 nodes."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What does the CAP theorem actually say, and why is QUORUM a practical compromise?".into(),
+                    "How does a replica set handle a split-brain scenario where two nodes think they are the leader?".into(),
+                    "What is the difference between synchronous and asynchronous replication, and when should you use each?".into(),
                 ],
             },
             references: vec![Reference {

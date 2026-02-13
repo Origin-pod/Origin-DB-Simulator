@@ -18,7 +18,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -89,34 +89,121 @@ impl ColumnarStorageBlock {
             description: "Column-oriented storage for analytical workloads".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "Columnar storage organizes data by column rather than by row. Each \
-                           column is stored as a contiguous array, which means analytical queries \
-                           that only need a few columns can skip reading the rest. This also \
-                           enables excellent compression since similar values are stored together."
+                overview: "Columnar storage organizes data by column rather than by row. Instead \
+                           of storing all fields of a record together (as in a heap file), each \
+                           column is stored as a separate contiguous array. This means analytical \
+                           queries that only need a few columns can skip reading the rest entirely, \
+                           dramatically reducing I/O.\n\n\
+                           In a database system, columnar storage is the foundation of OLAP (Online \
+                           Analytical Processing) engines and data warehouses. When you run a query \
+                           like SELECT AVG(price) FROM sales WHERE year = 2024, a row-oriented \
+                           engine must read every column of every row. A columnar engine reads only \
+                           the 'price' and 'year' columns, skipping all others. This also enables \
+                           excellent compression because values within a column are of the same type \
+                           and often have low cardinality (e.g., a 'country' column with only 200 \
+                           distinct values across millions of rows).\n\n\
+                           Think of columnar storage like a spreadsheet where each column is stored \
+                           in its own file. If you need to sum column C across a million rows, you \
+                           only open file C — not files A, B, D, E. The tradeoff is that fetching \
+                           a complete row requires opening every column file and reconstructing it."
                     .into(),
-                algorithm: "Insert: decompose each row into individual column values and append. \
-                            Read: project only the requested columns, reconstructing rows. \
-                            Compression is simulated by measuring value cardinality per column."
+                algorithm: "INGEST (decompose rows into columns):\n  \
+                           1. For each incoming record:\n    \
+                              a. For each (key, value) in the record:\n      \
+                                 - Find or create the Column for that key\n      \
+                                 - If column is new, backfill NULLs for previously ingested rows\n      \
+                                 - Append the value to the column's value array\n    \
+                              b. For columns not present in this record, push NULL\n    \
+                              c. Increment row_count\n\n\
+                           PROJECT (reconstruct rows from selected columns):\n  \
+                           1. Determine which columns to read (empty projection = all)\n  \
+                           2. For row index i = 0..row_count:\n    \
+                              a. Create a new Record\n    \
+                              b. For each selected column, read values[i]\n    \
+                              c. Emit the reconstructed record\n  \
+                           3. Track columns_read for I/O metrics\n\n\
+                           COMPRESSION ESTIMATION:\n  \
+                           1. For each column, count distinct values (cardinality)\n  \
+                           2. compression_ratio = total_values / distinct_values\n  \
+                           3. Low cardinality columns (e.g., status, category) compress very well"
                     .into(),
                 complexity: Complexity {
                     time: "Insert O(c) per row where c = columns, Projection O(n) for n rows".into(),
-                    space: "O(n × c) — same total data, different layout".into(),
+                    space: "O(n * c) — same total data, different layout".into(),
                 },
                 use_cases: vec![
                     "OLAP / analytical queries (aggregations over few columns)".into(),
                     "Data warehousing (star schema fact tables)".into(),
                     "Column-level compression for low-cardinality data".into(),
+                    "Time-series analytics where queries aggregate over specific metrics".into(),
+                    "Business intelligence dashboards that compute rollups and summaries".into(),
                 ],
                 tradeoffs: vec![
                     "Fast column scans but slow single-row lookups".into(),
                     "Excellent compression for low-cardinality columns".into(),
                     "Row reconstruction requires reading multiple columns".into(),
                     "Updates are expensive — append-mostly workloads preferred".into(),
+                    "Schema changes (adding columns) require backfilling NULLs for existing rows".into(),
+                    "Not suitable for OLTP workloads that read/write individual rows frequently".into(),
                 ],
                 examples: vec![
-                    "Apache Parquet file format".into(),
-                    "ClickHouse MergeTree engine".into(),
-                    "Amazon Redshift columnar storage".into(),
+                    "Apache Parquet — the standard columnar file format for data lakes and Spark/Hadoop".into(),
+                    "ClickHouse MergeTree — high-performance columnar OLAP database with real-time ingestion".into(),
+                    "Amazon Redshift — cloud data warehouse using columnar storage with zone maps".into(),
+                    "DuckDB — in-process columnar analytics database, often called 'SQLite for analytics'".into(),
+                ],
+                motivation: "Row-oriented storage engines (heap files, B-trees) must read entire rows \
+                             even when a query only needs one or two columns. For a table with 100 \
+                             columns, a query that aggregates a single column wastes 99% of the I/O \
+                             bandwidth reading irrelevant data.\n\n\
+                             Columnar storage solves this by physically separating columns so that \
+                             only the requested columns are read from disk. For analytical workloads \
+                             that scan millions of rows but touch only a few columns, this can reduce \
+                             I/O by 10-100x. Additionally, since all values in a column share the \
+                             same data type, columnar storage achieves much better compression ratios \
+                             than row-oriented storage."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("projection".into(),
+                     "A comma-separated list of column names to include in the output. When empty, \
+                      all columns are projected (like SELECT *). When specified, only those columns \
+                      are read, simulating the I/O savings of columnar storage. For example, \
+                      'id,price' reads only those two columns. This is the key advantage of \
+                      columnar layout: you pay I/O cost only for the columns you actually need. \
+                      Try different projections to see how columns_read changes in the metrics."
+                         .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "heap-file-storage".into(),
+                        comparison: "Heap files store complete rows together, making single-row \
+                                     reads fast but column-only scans wasteful. Choose heap for \
+                                     OLTP workloads that read/write full rows. Choose columnar for \
+                                     analytical queries that scan many rows but only need a few \
+                                     columns."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "clustered-storage".into(),
+                        comparison: "Clustered storage sorts rows by a key for fast range scans \
+                                     but still reads entire rows. Choose clustered for OLTP range \
+                                     queries on the primary key. Choose columnar for OLAP aggregation \
+                                     queries that only need specific columns."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "lsm-tree-storage".into(),
+                        comparison: "LSM trees optimize for write throughput with key-value semantics. \
+                                     They are row-oriented and not designed for column projections. \
+                                     Choose LSM for write-heavy key-value workloads. Choose columnar \
+                                     for read-heavy analytical workloads with selective column access."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "Why does columnar storage compress better than row-oriented storage?".into(),
+                    "How much I/O is saved by projecting 2 columns out of 20 in a columnar layout vs. a row layout?".into(),
+                    "What are zone maps and how do they help columnar engines skip irrelevant data blocks?".into(),
                 ],
             },
             references: vec![Reference {

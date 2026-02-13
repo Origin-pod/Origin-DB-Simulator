@@ -24,7 +24,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -75,12 +75,39 @@ impl SequentialScanBlock {
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
                 overview: "A sequential scan (also called a full table scan or seq scan) reads \
-                           every page of a table in order. It is the fallback plan when no \
-                           suitable index exists for the query's predicates."
+                           every page of a table from first to last. It is the simplest and \
+                           most fundamental scan strategy in any database — no index is needed, \
+                           no special data structure is required. The scan simply walks through \
+                           every page and examines every record.\n\n\
+                           Sequential scans are the fallback plan when no suitable index exists \
+                           for the query's predicates. But they are not always bad: for queries \
+                           that need to touch most rows anyway (analytics, aggregations, reports), \
+                           a sequential scan is actually the optimal choice because it reads \
+                           pages in order, which is friendly to disk prefetching and OS read-ahead \
+                           caches.\n\n\
+                           Think of it like reading a phone book from cover to cover to find \
+                           everyone named 'Smith'. You will definitely find all of them, but \
+                           you have to read every single page. If 80% of entries are named \
+                           Smith, this is perfectly reasonable. If only 1 entry is named Smith, \
+                           you would rather use the index at the back of the book."
                     .into(),
-                algorithm: "Iterate over all pages. For each page, examine every record slot. \
-                            If a filter predicate is set, only return matching records. Even \
-                            non-matching records incur a page I/O cost."
+                algorithm: "Sequential Scan Algorithm:\n\
+                            \n\
+                            FUNCTION sequential_scan(table, predicate):\n  \
+                              results = []\n  \
+                              pages_read = 0\n  \
+                              FOR EACH page IN table.pages (in order):\n    \
+                                pages_read += 1\n    \
+                                FOR EACH record IN page.records:\n      \
+                                  rows_scanned += 1\n      \
+                                  IF predicate IS NULL OR predicate(record) == true:\n        \
+                                    results.append(record)\n        \
+                                    rows_returned += 1\n  \
+                              selectivity = rows_returned / rows_scanned\n  \
+                              RETURN results\n\
+                            \n\
+                            NOTE: Even when a predicate filters out most rows,\n\
+                            ALL pages are still read — the I/O cost is the same."
                     .into(),
                 complexity: Complexity {
                     time: "O(n) — must read every record".into(),
@@ -90,15 +117,79 @@ impl SequentialScanBlock {
                     "Queries without an applicable index".into(),
                     "Aggregations that need all rows (COUNT(*), SUM)".into(),
                     "Small tables where index overhead isn't worthwhile".into(),
+                    "OLAP/analytics queries that process the majority of the table".into(),
+                    "Data export or ETL operations that read entire tables".into(),
                 ],
                 tradeoffs: vec![
                     "Simple and reliable but slow on large tables".into(),
                     "Predictable I/O pattern (sequential reads are cache-friendly)".into(),
                     "Doesn't benefit from selectivity — reads everything regardless".into(),
+                    "Can pollute the buffer pool by loading pages that are only needed once, \
+                     pushing out frequently accessed pages from other queries".into(),
+                    "Performs well on SSDs since random vs sequential I/O gap is smaller, \
+                     but still reads unnecessary data when selectivity is low".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL Seq Scan node".into(),
-                    "MySQL full table scan".into(),
+                    "PostgreSQL Seq Scan node — the query planner chooses this when the \
+                     estimated selectivity is too high for an index scan to be worthwhile".into(),
+                    "MySQL full table scan — chosen when no usable index covers the WHERE \
+                     clause columns".into(),
+                    "SQLite table scan — walks the B-tree leaf pages left to right".into(),
+                ],
+                motivation: "Every database needs a way to read data when no index is available. \
+                             The sequential scan is the universal fallback that always works, \
+                             regardless of what indexes exist. Without it, queries on un-indexed \
+                             columns would simply fail.\n\n\
+                             Sequential scans also serve as the baseline for understanding query \
+                             performance: if an index scan is not significantly faster than a seq \
+                             scan, the optimizer may choose the simpler scan instead. Understanding \
+                             when and why a sequential scan is chosen is fundamental to query \
+                             tuning."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("filter_column".into(), "The column name to filter on. When left empty, \
+                                              no filter is applied and all rows are returned. \
+                                              Setting a filter column simulates a WHERE clause — \
+                                              the scan still reads every page, but only returns \
+                                              rows where this column matches the filter value. \
+                                              Use this to observe the difference between rows \
+                                              scanned and rows returned.".into()),
+                    ("filter_value".into(), "The value to match in the filter column. Only rows \
+                                             where filter_column equals this value are returned. \
+                                             Try different values to see how selectivity changes. \
+                                             A highly selective value (matching few rows) shows \
+                                             why an index scan would be better — the seq scan \
+                                             still reads every page regardless.".into()),
+                    ("records_per_page".into(), "Controls how many records fit on a simulated \
+                                                 page. This affects the pages_read metric. Lower \
+                                                 values simulate wider rows (fewer per page, more \
+                                                 pages to read). Higher values simulate narrow rows. \
+                                                 Typical databases fit 50-200 rows per 8 KB page \
+                                                 depending on row width. Changing this helps you \
+                                                 understand the relationship between row size and \
+                                                 I/O cost.".into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "index-scan".into(),
+                        comparison: "An index scan reads only the pages containing matching \
+                                     records, making it far faster for selective queries (e.g., \
+                                     WHERE id = 42). However, index scans use random I/O \
+                                     (jumping between pages) which is slower per page than \
+                                     sequential I/O. The crossover point is typically around \
+                                     5-15% selectivity: below that, index scan wins; above it, \
+                                     sequential scan is often faster. Choose sequential scan \
+                                     for analytics and bulk reads; choose index scan for \
+                                     selective point queries.".into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "At what selectivity percentage does a sequential scan become faster \
+                     than an index scan, and why?".into(),
+                    "How does the operating system's read-ahead optimization help sequential \
+                     scans but not index scans?".into(),
+                    "Why might a database choose a sequential scan even when an index exists \
+                     on the filtered column?".into(),
                 ],
             },
             references: vec![Reference {

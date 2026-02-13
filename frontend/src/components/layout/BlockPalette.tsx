@@ -21,8 +21,9 @@ import {
   ArrowUpDown,
   Merge,
   FileText,
-  Info,
+  BookOpen,
 } from 'lucide-react';
+import { useWikiStore } from '@/stores/wikiStore';
 import {
   BLOCK_REGISTRY,
   CATEGORIES,
@@ -71,21 +72,19 @@ const CATEGORY_STYLES: Record<BlockCategory, { bg: string; border: string; text:
 
 interface BlockItemProps {
   block: BlockDefinition;
-  expanded: boolean;
-  onToggleInfo: (blockType: string) => void;
   onDragStart: (e: DragEvent<HTMLDivElement>, block: BlockDefinition) => void;
 }
 
-function BlockItem({ block, expanded, onToggleInfo, onDragStart }: BlockItemProps) {
+function BlockItem({ block, onDragStart }: BlockItemProps) {
   const styles = CATEGORY_STYLES[block.category];
   const icon = ICONS[block.icon] || <Database className="w-4 h-4" />;
   const doc = block.documentation;
   const complexity = doc?.complexity;
 
-  const handleInfoClick = (e: MouseEvent) => {
+  const handleWikiClick = (e: MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    onToggleInfo(block.type);
+    useWikiStore.getState().open(block.type);
   };
 
   return (
@@ -105,17 +104,13 @@ function BlockItem({ block, expanded, onToggleInfo, onDragStart }: BlockItemProp
           {block.name}
         </span>
         <button
-          onClick={handleInfoClick}
+          onClick={handleWikiClick}
           onMouseDown={(e) => e.stopPropagation()}
-          className={`shrink-0 p-0.5 rounded transition-colors ${
-            expanded
-              ? 'text-blue-600 bg-blue-100'
-              : 'text-gray-400 hover:text-gray-600'
-          }`}
-          title="Block details"
+          className="shrink-0 p-0.5 rounded transition-colors text-gray-400 hover:text-blue-600 hover:bg-blue-50"
+          title="Open wiki"
           draggable={false}
         >
-          <Info className="w-3.5 h-3.5" />
+          <BookOpen className="w-3.5 h-3.5" />
         </button>
       </div>
 
@@ -132,37 +127,6 @@ function BlockItem({ block, expanded, onToggleInfo, onDragStart }: BlockItemProp
       )}
 
       <p className="text-xs text-gray-500 line-clamp-2">{block.description}</p>
-
-      {/* Expanded info preview */}
-      {expanded && (
-        <div className="mt-2 pt-2 border-t border-gray-200/60 space-y-2">
-          {(doc?.overview || doc?.details) && (
-            <p className="text-xs text-gray-600 leading-relaxed">
-              {doc.overview || doc.details}
-            </p>
-          )}
-          {doc?.useCases && doc.useCases.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1">
-                Use cases
-              </p>
-              <ul className="text-xs text-gray-600 space-y-0.5">
-                {doc.useCases.slice(0, 3).map((uc, i) => (
-                  <li key={i} className="flex gap-1.5">
-                    <span className="text-green-500 shrink-0">+</span>
-                    <span className="line-clamp-2">{uc}</span>
-                  </li>
-                ))}
-                {doc.useCases.length > 3 && (
-                  <li className="text-gray-400 text-[11px] pl-4">
-                    +{doc.useCases.length - 3} more...
-                  </li>
-                )}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -171,9 +135,7 @@ interface CategorySectionProps {
   category: CategoryInfo;
   blocks: BlockDefinition[];
   isExpanded: boolean;
-  expandedInfo: string | null;
   onToggle: () => void;
-  onToggleInfo: (blockType: string) => void;
   onDragStart: (e: DragEvent<HTMLDivElement>, block: BlockDefinition) => void;
 }
 
@@ -181,9 +143,7 @@ function CategorySection({
   category,
   blocks,
   isExpanded,
-  expandedInfo,
   onToggle,
-  onToggleInfo,
   onDragStart,
 }: CategorySectionProps) {
   const icon = ICONS[category.icon] || <Database className="w-4 h-4" />;
@@ -216,8 +176,6 @@ function CategorySection({
             <BlockItem
               key={block.type}
               block={block}
-              expanded={expandedInfo === block.type}
-              onToggleInfo={onToggleInfo}
               onDragStart={onDragStart}
             />
           ))}
@@ -232,12 +190,6 @@ export function BlockPalette() {
   const [expandedCategories, setExpandedCategories] = useState<Set<BlockCategory>>(
     new Set(['storage', 'index', 'buffer', 'execution'])
   );
-  const [expandedInfo, setExpandedInfo] = useState<string | null>(null);
-
-  const handleToggleInfo = (blockType: string) => {
-    setExpandedInfo((prev) => (prev === blockType ? null : blockType));
-  };
-
   const handleToggleCategory = (categoryId: BlockCategory) => {
     setExpandedCategories((prev) => {
       const next = new Set(prev);
@@ -301,8 +253,6 @@ export function BlockPalette() {
                   <BlockItem
                     key={block.type}
                     block={block}
-                    expanded={expandedInfo === block.type}
-                    onToggleInfo={handleToggleInfo}
                     onDragStart={handleDragStart}
                   />
                 ))}
@@ -326,9 +276,7 @@ export function BlockPalette() {
                   category={category}
                   blocks={blocks}
                   isExpanded={expandedCategories.has(category.id)}
-                  expandedInfo={expandedInfo}
                   onToggle={() => handleToggleCategory(category.id)}
-                  onToggleInfo={handleToggleInfo}
                   onDragStart={handleDragStart}
                 />
               );

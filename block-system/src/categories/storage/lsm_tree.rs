@@ -34,7 +34,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -208,18 +208,52 @@ impl LSMTreeBlock {
             description: "Log-Structured Merge-Tree with memtable, SSTables, and compaction".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "An LSM Tree optimizes write throughput by buffering writes in an \
-                           in-memory memtable, then flushing sorted runs to disk as SSTables. \
-                           Background compaction merges SSTables to reduce read amplification."
+                overview: "An LSM Tree (Log-Structured Merge-Tree) optimizes write throughput by \
+                           buffering all writes in a fast, in-memory sorted structure called a \
+                           memtable. When the memtable reaches a configured size threshold, it is \
+                           frozen and flushed to disk as an immutable Sorted String Table (SSTable). \
+                           Background compaction merges SSTables across levels to bound read \
+                           amplification and reclaim space from obsolete entries.\n\n\
+                           In a database system, the LSM tree sits at the storage engine layer and \
+                           is the dominant architecture for write-optimized key-value stores. Unlike \
+                           B-trees that update data in-place (requiring random I/O), LSM trees \
+                           convert random writes into sequential writes by batching them in memory \
+                           and writing sorted runs. This makes them ideal for modern SSDs and \
+                           spinning disks alike.\n\n\
+                           Think of an LSM tree like a mail sorting system: incoming letters \
+                           (writes) pile up in your inbox (memtable). Periodically you sort the \
+                           inbox and file it into a cabinet drawer (Level 0 SSTable). When a drawer \
+                           gets too full, you merge it with the next larger filing cabinet \
+                           (compaction to Level 1). Finding a specific letter means checking the \
+                           inbox first, then the most recent drawer, working backward."
                     .into(),
-                algorithm: "Write: insert into memtable (O(log n)). When memtable is full, \
-                            sort and flush to Level 0 as an SSTable. When Level 0 has too many \
-                            SSTables, merge them into Level 1 (size-tiered compaction). Read: \
-                            check memtable, then L0 (newest first), then L1+. Bloom filters \
-                            skip SSTables that don't contain the key."
+                algorithm: "WRITE (put key, value):\n  \
+                           1. Insert (key, value) into the memtable (BTreeMap, O(log n))\n  \
+                           2. Track user_bytes_written for amplification metrics\n  \
+                           3. If memtable.len() >= memtable_size:\n    \
+                              a. Freeze the memtable\n    \
+                              b. Sort entries and write as a new SSTable at Level 0\n    \
+                              c. Create a Bloom filter for the new SSTable\n    \
+                              d. Increment flush_count\n    \
+                              e. If Level 0 has >= level0_compaction_trigger SSTables:\n      \
+                                 Trigger compaction of Level 0 into Level 1\n\n\
+                           COMPACTION (level L):\n  \
+                           1. Collect all entries from all SSTables at level L\n  \
+                           2. Merge with all entries at level L+1\n  \
+                           3. Sort by key, deduplicate (keep newest value)\n  \
+                           4. Write as a new SSTable at level L+1\n  \
+                           5. Track total_bytes_written for amplification\n  \
+                           6. Check if L+1 also needs compaction (cascading)\n\n\
+                           READ (get key):\n  \
+                           1. Check memtable — return if found (newest data)\n  \
+                           2. For each level, newest SSTable first:\n    \
+                              a. Check Bloom filter — skip if definitely absent\n    \
+                              b. Binary search SSTable entries\n    \
+                              c. Return if found\n  \
+                           3. Return None if not found in any level"
                     .into(),
                 complexity: Complexity {
-                    time: "Write O(log n) amortized, Point read O(L × log n) where L = levels"
+                    time: "Write O(log n) amortized, Point read O(L * log n) where L = levels"
                         .into(),
                     space: "O(n) with write amplification factor ~size_ratio per level".into(),
                 },
@@ -227,18 +261,103 @@ impl LSMTreeBlock {
                     "Write-heavy workloads (logging, time-series, event ingestion)".into(),
                     "Key-value stores (RocksDB, LevelDB, Cassandra)".into(),
                     "Workloads where reads can tolerate some amplification".into(),
+                    "Append-heavy ingestion pipelines where data arrives faster than a B-tree can index it".into(),
+                    "Time-series databases where recent data is queried most often".into(),
                 ],
                 tradeoffs: vec![
                     "Excellent write throughput but reads check multiple levels".into(),
                     "Write amplification from compaction (each record rewritten ~size_ratio times per level)".into(),
                     "Space amplification before compaction catches up".into(),
                     "Bloom filters reduce read cost but use memory".into(),
+                    "Compaction can cause latency spikes if not properly scheduled or rate-limited".into(),
+                    "Range scans are more expensive than B-trees since data is spread across levels".into(),
                 ],
                 examples: vec![
-                    "RocksDB (Facebook)".into(),
-                    "LevelDB (Google)".into(),
-                    "Apache Cassandra SSTables".into(),
-                    "ScyllaDB".into(),
+                    "RocksDB (Meta) — the most widely used LSM engine, used in MySQL (MyRocks), CockroachDB, TiKV".into(),
+                    "LevelDB (Google) — the original leveled compaction implementation, inspiration for RocksDB".into(),
+                    "Apache Cassandra SSTables — distributed LSM storage with size-tiered compaction".into(),
+                    "ScyllaDB — high-performance Cassandra-compatible LSM engine written in C++".into(),
+                ],
+                motivation: "Traditional B-tree storage engines must perform random I/O for every \
+                             write because they update data in-place on disk. When write throughput \
+                             is the bottleneck — such as ingesting millions of events per second, \
+                             logging, or time-series data — this random I/O becomes the limiting \
+                             factor.\n\n\
+                             The LSM tree solves this by converting random writes into sequential \
+                             writes. Instead of seeking to the right page on disk for each insert, \
+                             it batches writes in memory and periodically flushes them as a large, \
+                             sorted, sequential write. This can achieve 10-100x higher write \
+                             throughput compared to B-tree engines, at the cost of more expensive \
+                             reads and background compaction work."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("memtable_size".into(),
+                     "Controls how many entries accumulate in memory before being flushed to \
+                      disk as an SSTable. Larger memtable (e.g., 10000-100000) means fewer \
+                      flushes, larger SSTables, and better write throughput — but uses more \
+                      RAM and risks more data loss on crash (unless a WAL is used). Smaller \
+                      memtable (e.g., 10-100) flushes frequently, creating many small SSTables \
+                      that increase read amplification and trigger more compactions. \
+                      Recommended: 1000-10000 for general workloads. Default is 1000."
+                         .into()),
+                    ("level0_compaction_trigger".into(),
+                     "Number of SSTables at Level 0 before compaction merges them into Level 1. \
+                      Higher values (e.g., 8-20) delay compaction, which improves write throughput \
+                      but makes reads slower because more L0 SSTables must be checked. Lower \
+                      values (e.g., 2-4) compact sooner, keeping reads fast but increasing write \
+                      amplification. Recommended: 4-8 for balanced workloads, 2-3 for read-heavy, \
+                      10+ for write-heavy. Default is 4."
+                         .into()),
+                    ("size_ratio".into(),
+                     "The size multiplier between adjacent levels. With size_ratio=10, Level 1 \
+                      can hold 10x more data than Level 0, Level 2 holds 100x, etc. Higher \
+                      values (e.g., 10-20) mean fewer levels and fewer compactions, but each \
+                      compaction moves more data (higher write amplification per compaction). \
+                      Lower values (e.g., 2-4) create more levels, meaning more SSTables to \
+                      check during reads. Recommended: 10 for most workloads (matches LevelDB/RocksDB \
+                      defaults). Range: 2-20."
+                         .into()),
+                    ("key_column".into(),
+                     "The column name used as the key for the LSM tree. Each record must have \
+                      this column. The key determines how records are sorted within SSTables \
+                      and how duplicates are resolved (latest value wins). Choose the column \
+                      that you will most frequently look up by. Default is 'id'."
+                         .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "heap-file-storage".into(),
+                        comparison: "Heap files append records to unordered pages with no memtable \
+                                     or compaction overhead. They are simpler and have no write \
+                                     amplification, but offer no key-based organization. Choose heap \
+                                     for simple row storage with separate B-tree indexes. Choose LSM \
+                                     when write throughput is the primary concern and you need built-in \
+                                     key-value semantics."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "clustered-storage".into(),
+                        comparison: "Clustered storage sorts records by a key on disk for fast range \
+                                     scans but suffers from page splits on random inserts. Choose \
+                                     clustered when range scan performance on the sort key matters \
+                                     most. Choose LSM when write throughput is more important than \
+                                     range scan speed."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "columnar-storage".into(),
+                        comparison: "Columnar storage organizes data by column for analytical queries. \
+                                     It excels at scanning few columns across many rows but is poor \
+                                     at point lookups and single-row writes. Choose columnar for \
+                                     OLAP/warehouse workloads. Choose LSM for OLTP key-value workloads \
+                                     with high write rates."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "How does write amplification change as the size_ratio increases from 2 to 20?".into(),
+                    "Why do Bloom filters help read performance, and what happens if the false positive rate is too high?".into(),
+                    "What is the difference between size-tiered and leveled compaction strategies?".into(),
                 ],
             },
             references: vec![Reference {

@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -93,13 +93,44 @@ impl LRUBufferBlock {
             description: "Fixed-size page cache with LRU eviction".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A buffer pool caches frequently accessed pages in memory to avoid \
-                           repeated reads from storage. LRU eviction ensures the least \
-                           recently accessed page is removed when the pool is full."
+                overview: "A buffer pool is a region of main memory dedicated to caching \
+                           disk pages so that frequently accessed data can be served without \
+                           going to storage. The LRU (Least Recently Used) buffer pool is \
+                           the most intuitive eviction strategy: when the pool is full and a \
+                           new page must be loaded, the page that has not been accessed for \
+                           the longest time is evicted.\n\n\
+                           In a database system, the buffer pool sits between the execution \
+                           engine and the storage manager. Every operator — scans, index \
+                           lookups, joins — requests pages through the buffer pool. A well-tuned \
+                           buffer pool dramatically reduces disk I/O, which is typically the \
+                           biggest performance bottleneck.\n\n\
+                           Think of it like a desk with limited space: you keep the documents \
+                           you used most recently on the desk. When you need a new document \
+                           and the desk is full, you file away the one you haven't touched \
+                           in the longest time. LRU is simple, predictable, and works well \
+                           for most workloads — but it can be tricked by a single large \
+                           sequential scan that pushes out all the useful cached pages."
                     .into(),
-                algorithm: "On access: if page is in cache (hit), move it to MRU position. \
-                            If not (miss), evict LRU page if pool is full, then insert the \
-                            new page at MRU position."
+                algorithm: "LRU Buffer Pool Algorithm:\n\
+                            \n\
+                            FUNCTION get_page(page_id):\n  \
+                              IF page_id IN cache:\n    \
+                                // Cache HIT\n    \
+                                Remove page_id from current position in LRU list\n    \
+                                Push page_id to back of LRU list (MRU position)\n    \
+                                hits += 1\n    \
+                                RETURN page_data\n  \
+                              ELSE:\n    \
+                                // Cache MISS\n    \
+                                IF cache.size >= capacity:\n      \
+                                  victim = LRU list front (least recently used)\n      \
+                                  Remove victim from cache and LRU list\n      \
+                                  evictions += 1\n    \
+                                Fetch page_data from storage\n    \
+                                Insert (page_id, page_data) into cache\n    \
+                                Push page_id to back of LRU list\n    \
+                                misses += 1\n    \
+                                RETURN page_data"
                     .into(),
                 complexity: Complexity {
                     time: "O(n) per access in this VecDeque implementation; O(1) with a \
@@ -111,16 +142,71 @@ impl LRUBufferBlock {
                     "Reducing storage I/O for hot data".into(),
                     "Caching index pages during lookups".into(),
                     "Shared buffer pool for multiple table/index accesses".into(),
+                    "OLTP workloads with repeated access to the same rows".into(),
+                    "Buffering WAL (write-ahead log) pages for transaction durability".into(),
                 ],
                 tradeoffs: vec![
                     "LRU can be fooled by sequential scans (see Clock or LRU-K)".into(),
                     "Larger pool = more memory, but better hit rate".into(),
                     "Simple LRU doesn't distinguish between scan and point access".into(),
+                    "Maintaining strict LRU order requires a list update on every access, \
+                     which is expensive under high concurrency".into(),
+                    "Cold start: the pool starts empty, so the first accesses are all misses \
+                     until the working set is loaded".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL shared_buffers".into(),
-                    "MySQL InnoDB buffer pool".into(),
-                    "SQLite page cache".into(),
+                    "PostgreSQL shared_buffers — the main buffer pool, though PostgreSQL \
+                     actually uses a clock-sweep variant internally".into(),
+                    "MySQL InnoDB buffer pool — uses a modified LRU with a young/old \
+                     sublist to resist scan pollution".into(),
+                    "SQLite page cache — a simple LRU cache in front of the B-tree pager".into(),
+                    "Oracle Database buffer cache — uses a touch-count based LRU".into(),
+                ],
+                motivation: "Without a buffer pool, every page request would require a disk \
+                             read. Disk I/O is roughly 1000x slower than memory access, so \
+                             even a single query touching 100 pages would be painfully slow. \
+                             The buffer pool keeps hot pages in RAM, turning most page \
+                             requests into fast memory lookups.\n\n\
+                             LRU is the default choice because it captures temporal locality: \
+                             pages accessed recently are likely to be accessed again soon. \
+                             It is the baseline against which more sophisticated policies \
+                             (Clock, LRU-K, 2Q, ARC) are compared."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("size".into(), "Controls the maximum number of pages the buffer pool \
+                                     can hold. A larger pool means more data stays cached, \
+                                     improving hit rates — but it consumes more memory. For \
+                                     OLTP workloads, aim for a pool large enough to hold the \
+                                     active working set (commonly 25-75% of total data). Start \
+                                     with 1024 pages and increase if you see hit rates below \
+                                     90%. Typical production databases set this to gigabytes \
+                                     of RAM.".into()),
+                    ("page_size".into(), "The size of each cached page in bytes. This should \
+                                          match the storage block size. Common values are 4096 \
+                                          (4 KB) for OLTP and 8192 (8 KB, the default) for \
+                                          general-purpose use. Larger pages reduce the number \
+                                          of I/O operations but waste memory when only a few \
+                                          rows per page are needed. PostgreSQL uses 8 KB, MySQL \
+                                          InnoDB uses 16 KB.".into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "clock-buffer-pool".into(),
+                        comparison: "The Clock buffer pool approximates LRU with lower overhead. \
+                                     LRU requires updating a linked list on every access, while \
+                                     Clock only sets a reference bit — making it cheaper under \
+                                     high concurrency. Choose LRU when access ordering precision \
+                                     matters; choose Clock when throughput under contention is \
+                                     the priority. PostgreSQL chose Clock for this reason.".into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What happens to the hit rate when a sequential scan reads more pages \
+                     than the buffer pool capacity?".into(),
+                    "Why is O(1) LRU implementation important, and how does a hash map + \
+                     doubly-linked list achieve it?".into(),
+                    "How does MySQL's young/old sublist LRU variant protect against scan \
+                     pollution?".into(),
                 ],
             },
             references: vec![Reference {

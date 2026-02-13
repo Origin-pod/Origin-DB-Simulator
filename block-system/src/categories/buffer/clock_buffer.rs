@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -100,15 +100,51 @@ impl ClockBufferBlock {
             description: "Page cache with CLOCK (second-chance) eviction — used by PostgreSQL".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "The CLOCK algorithm approximates LRU eviction using a circular buffer \
-                           and a single reference bit per page. When a page is accessed, its \
-                           reference bit is set. On eviction, the clock hand sweeps: pages with \
-                           a set bit get a 'second chance' (bit cleared), while pages with an \
-                           unset bit are evicted."
+                overview: "The CLOCK algorithm (also known as second-chance) is a page \
+                           replacement policy that approximates LRU behavior without the \
+                           overhead of maintaining an explicit access-order list. Instead \
+                           of tracking the exact order of accesses, each page gets a single \
+                           reference bit that is set whenever the page is accessed.\n\n\
+                           When eviction is needed, a clock hand sweeps around a circular \
+                           buffer. If a page's reference bit is set, the algorithm gives it \
+                           a 'second chance' by clearing the bit and moving on. If the bit \
+                           is already clear, the page is evicted. This means recently \
+                           accessed pages survive at least one full sweep before eviction.\n\n\
+                           PostgreSQL chose CLOCK over strict LRU for its shared buffer pool \
+                           because setting a bit is an atomic operation that requires no lock \
+                           contention, while moving a node in a linked list requires exclusive \
+                           access. Under hundreds of concurrent connections, this difference \
+                           is significant."
                     .into(),
-                algorithm: "On access: if page is cached, set reference bit (hit). On miss: \
-                            advance clock hand — if reference bit is set, clear it and advance; \
-                            if unset, evict that page and insert the new one."
+                algorithm: "CLOCK Buffer Pool Algorithm:\n\
+                            \n\
+                            STRUCTURE: Circular array of slots, each with (page_id, ref_bit)\n\
+                            STATE: clock_hand pointing to current slot\n\
+                            \n\
+                            FUNCTION get_page(page_id):\n  \
+                              IF page_id IN page_map:\n    \
+                                // Cache HIT — just set the reference bit\n    \
+                                slot = page_map[page_id]\n    \
+                                slots[slot].ref_bit = true\n    \
+                                RETURN page_data\n  \
+                              ELSE:\n    \
+                                // Cache MISS — need to find a slot\n    \
+                                IF pool is full:\n      \
+                                  CALL evict_one()\n    \
+                                slot = find_empty_slot()\n    \
+                                slots[slot] = (page_id, ref_bit=true)\n    \
+                                RETURN fetched page_data\n\
+                            \n\
+                            FUNCTION evict_one():\n  \
+                              LOOP:\n    \
+                                entry = slots[clock_hand]\n    \
+                                IF entry.ref_bit == true:\n      \
+                                  entry.ref_bit = false   // second chance\n      \
+                                  advance clock_hand\n    \
+                                ELSE:\n      \
+                                  EVICT entry.page_id\n      \
+                                  advance clock_hand\n      \
+                                  RETURN"
                     .into(),
                 complexity: Complexity {
                     time: "O(1) amortized per access; worst case O(n) sweep on eviction".into(),
@@ -118,15 +154,69 @@ impl ClockBufferBlock {
                     "PostgreSQL shared_buffers replacement policy".into(),
                     "High-concurrency buffer pools where LRU reordering is expensive".into(),
                     "Systems with mixed scan and point-lookup workloads".into(),
+                    "Embedded databases that need a simple, low-overhead cache policy".into(),
+                    "Operating system virtual memory page replacement".into(),
                 ],
                 tradeoffs: vec![
                     "Less precise than true LRU but much cheaper under concurrency".into(),
                     "Sequential scans can pollute the cache (same as LRU)".into(),
                     "Second-chance mechanism helps retain hot pages during scans".into(),
+                    "The clock hand sweep can take O(n) in the worst case if all pages \
+                     have their reference bit set, causing a temporary latency spike".into(),
+                    "Cannot distinguish between a page accessed once and a page accessed \
+                     many times — both just have ref_bit=true".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL uses clock-sweep for its shared buffer pool".into(),
-                    "OS page replacement algorithms (Linux uses a variant)".into(),
+                    "PostgreSQL uses clock-sweep for its shared buffer pool — the \
+                     bgwriter process advances the clock hand proactively".into(),
+                    "OS page replacement algorithms — Linux uses a two-list variant \
+                     (active/inactive) inspired by CLOCK concepts".into(),
+                    "Apache Derby uses a CLOCK-based buffer manager".into(),
+                ],
+                motivation: "Maintaining a strict LRU list requires updating a data structure \
+                             on every single page access. In a high-concurrency database with \
+                             thousands of queries running simultaneously, this creates severe \
+                             lock contention on the LRU list. CLOCK solves this by replacing \
+                             the list update with a single bit-set operation, which can be done \
+                             atomically without locking.\n\n\
+                             Without CLOCK (or a similar approximation), the buffer manager \
+                             becomes a bottleneck under concurrent workloads. The slight loss \
+                             in eviction quality compared to true LRU is a worthwhile trade \
+                             for dramatically better throughput."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("size".into(), "The number of slots in the circular buffer. More slots \
+                                     mean more pages can be cached, improving hit rates. However, \
+                                     each slot consumes memory for the page data. Start with 1024 \
+                                     and observe the hit rate and clock_hand_sweeps metrics. If \
+                                     sweeps are frequent, the pool is too small for the workload. \
+                                     Aim for a hit rate above 90% for OLTP workloads.".into()),
+                    ("page_size".into(), "Size of each cached page in bytes. Should match the \
+                                          storage layer's page size. The default of 8192 bytes \
+                                          (8 KB) matches PostgreSQL. Larger pages (16 KB, like \
+                                          MySQL InnoDB) hold more rows per page but waste space \
+                                          when accessing individual rows. Smaller pages (4 KB) \
+                                          are better for point lookups on small records.".into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "lru-buffer-pool".into(),
+                        comparison: "LRU maintains exact access order, giving more precise \
+                                     eviction decisions. Choose LRU when concurrency is low \
+                                     and eviction quality matters (e.g., single-threaded \
+                                     embedded databases). Choose CLOCK when the system has \
+                                     many concurrent readers and the overhead of list \
+                                     reordering on every access is unacceptable. In practice, \
+                                     CLOCK achieves hit rates within 1-2% of true LRU.".into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "How many times does the clock hand need to sweep before evicting a \
+                     page that was just accessed?".into(),
+                    "What is the worst-case scenario for CLOCK eviction latency, and how \
+                     can PostgreSQL's bgwriter mitigate it?".into(),
+                    "How would you modify CLOCK to give more chances to frequently accessed \
+                     pages (hint: look up CLOCK-Pro or GCLOCK)?".into(),
                 ],
             },
             references: vec![Reference {

@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -86,15 +86,42 @@ impl DictionaryEncodingBlock {
             description: "Compresses low-cardinality data by mapping values to integer codes".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "Dictionary encoding replaces repeated values with compact integer \
-                           codes. A dictionary maps each unique value to a code, and the \
-                           compressed data stores only codes. Decompression is a simple \
-                           dictionary lookup. This is extremely effective for columns with \
-                           low cardinality (few distinct values)."
+                overview: "Dictionary encoding replaces repeated values with compact integer codes. A \
+                           dictionary maps each unique value to a small integer code, and the compressed \
+                           data stores only codes instead of the original values. Decompression is a \
+                           simple dictionary lookup. This is extremely effective for columns with low \
+                           cardinality — few distinct values relative to the total number of rows.\n\n\
+                           In columnar databases, dictionary encoding is typically the first compression \
+                           pass applied to string and enum columns. After replacing strings with integer \
+                           codes, a second pass (LZ4, ZSTD, or run-length encoding) can further compress \
+                           the integer codes. The combination often achieves 10-100x compression ratios on \
+                           real-world data.\n\n\
+                           Think of dictionary encoding like abbreviations in a book. Instead of writing \
+                           'United States of America' every time it appears, you define 'USA' in a glossary \
+                           and use the abbreviation everywhere else. The glossary is the dictionary, the \
+                           abbreviation is the code, and the space savings are enormous when the same long \
+                           value appears thousands of times."
                     .into(),
-                algorithm: "Build phase: scan values, assign incrementing codes to new values. \
-                            Encode phase: replace each value with its code. The dictionary is \
-                            stored alongside the data. Decoding is O(1) per value."
+                algorithm: "ENCODE(values[]):\n  \
+                           dictionary = {}  // value -> code mapping\n  \
+                           next_code = 0\n  \
+                           encoded = []\n\n  \
+                           For each value in values:\n    \
+                             If value in dictionary:\n      \
+                               encoded.push(dictionary[value])\n    \
+                             Else if dictionary.size() < max_dictionary_size:\n      \
+                               dictionary[value] = next_code\n      \
+                               encoded.push(next_code)\n      \
+                               next_code += 1\n    \
+                             Else:\n      \
+                               // Dictionary full — fall back to uncompressed\n      \
+                               encoded.push(value)  // store raw\n      \
+                               dictionary_full_events += 1\n\n\
+                           DECODE(code):\n  \
+                           Return reverse_dictionary[code]  // O(1) array lookup\n\n\
+                           COMPRESSION_RATIO:\n  \
+                           original_size / compressed_size\n  \
+                           E.g., 8-byte strings -> 2-byte codes = 4x compression"
                     .into(),
                 complexity: Complexity {
                     time: "O(n) to encode n values — one hash lookup per value".into(),
@@ -105,17 +132,73 @@ impl DictionaryEncodingBlock {
                     "Columnar stores compress string columns (country, status, category)".into(),
                     "Parquet and ORC file formats use dictionary encoding by default".into(),
                     "ClickHouse's LowCardinality type is dictionary encoding".into(),
+                    "Data warehouses compress dimension columns with repeated categorical values".into(),
+                    "Network protocol encoding — map repeated header strings to integer codes".into(),
                 ],
                 tradeoffs: vec![
                     "Excellent for low-cardinality columns (< 10K distinct values)".into(),
                     "Poor for high-cardinality columns (dictionary becomes larger than data)".into(),
                     "Dictionary must fit in memory for fast encoding/decoding".into(),
                     "Often combined with other compression (LZ4, ZSTD) on the codes".into(),
+                    "Dictionary overhead is fixed per column segment — amortized over many rows".into(),
+                    "Query operations on encoded data can work directly on codes (equality, grouping) without decoding".into(),
                 ],
                 examples: vec![
-                    "Parquet uses dictionary encoding for string/enum columns".into(),
-                    "ClickHouse LowCardinality wraps any type with dictionary encoding".into(),
-                    "Vertica: ENCODING RLE for sorted columns, ENCODING AUTO for others".into(),
+                    "Parquet — dictionary encoding is the default first pass; falls back to plain encoding when dictionary exceeds page size".into(),
+                    "ClickHouse LowCardinality — wraps any type with dictionary encoding, enables vectorized operations on codes".into(),
+                    "Vertica — ENCODING RLE for sorted low-cardinality, ENCODING AUTO selects dictionary encoding automatically".into(),
+                    "Apache Arrow — dictionary-encoded arrays for efficient in-memory columnar representation".into(),
+                ],
+                motivation: "Without compression, columnar databases storing billions of rows would require \
+                             enormous amounts of storage. Consider a 'country' column with 2 billion rows but \
+                             only 200 distinct country names. Storing the full string 'United States' (13 bytes) \
+                             2 billion times wastes ~24 GB. With dictionary encoding, each occurrence is replaced \
+                             by a 1-byte code, reducing the column to ~2 GB — a 12x savings.\n\n\
+                             Beyond storage savings, dictionary encoding also speeds up queries. Filtering \
+                             'WHERE country = US' can compare integer codes instead of strings, which is much \
+                             faster. GROUP BY operations can also work on codes, deferring the dictionary lookup \
+                             to the final output stage."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("max_dictionary_size".into(),
+                     "The maximum number of distinct values the dictionary can hold. When this limit is \
+                      reached, new values cannot be encoded and are stored uncompressed (fallback). A \
+                      larger dictionary (8192-65536) can handle higher cardinality columns but uses more \
+                      memory and may reduce compression effectiveness when the dictionary itself becomes \
+                      large. A smaller dictionary (16-256) works well for very low cardinality (e.g., \
+                      boolean, status, or country columns). Parquet uses a page-size-based limit (~1MB \
+                      dictionary per column chunk). Recommended: 4096 for general use; 256-1024 for columns \
+                      you know have very low cardinality; 8192-65536 for medium cardinality columns."
+                        .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "run-length-encoding".into(),
+                        comparison: "Run-length encoding (RLE) replaces consecutive repeated values with a \
+                                     single (value, count) pair. It is most effective on sorted data where \
+                                     identical values cluster together. Dictionary encoding works regardless \
+                                     of value order and is effective whenever there are repeated values anywhere \
+                                     in the column. In practice, columnar databases often apply dictionary \
+                                     encoding first, then RLE on the resulting sorted codes for maximum \
+                                     compression."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "lz4-compression".into(),
+                        comparison: "LZ4 is a general-purpose byte-level compression algorithm that works \
+                                     on any data pattern. Dictionary encoding is domain-specific — it exploits \
+                                     the knowledge that values repeat exactly. Dictionary encoding typically \
+                                     achieves better compression ratios for low-cardinality data and allows \
+                                     query operations on compressed data (code comparisons). LZ4 requires \
+                                     full decompression before data can be queried. Many systems use both: \
+                                     dictionary encoding first, then LZ4 on the codes."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "When does dictionary encoding become counterproductive, and how does a database detect this?".into(),
+                    "How can a database execute queries directly on dictionary-encoded data without decompressing?".into(),
+                    "What is the relationship between dictionary encoding and the LowCardinality type in ClickHouse?".into(),
                 ],
             },
             references: vec![Reference {

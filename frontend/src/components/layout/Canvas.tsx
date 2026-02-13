@@ -14,6 +14,7 @@ import '@xyflow/react/dist/style.css';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { useDesignStore } from '@/stores/designStore';
 import { useWorkloadStore } from '@/stores/workloadStore';
+import { useWikiStore } from '@/stores/wikiStore';
 import { BlockNode } from '@/components/nodes/BlockNode';
 import { CATEGORY_COLORS, type BlockCategory, type BlockNodeData } from '@/types';
 import { getBlockDefinition } from '@/types/blocks';
@@ -64,6 +65,15 @@ export function Canvas() {
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedNodeId) {
         e.preventDefault();
         removeNode(selectedNodeId);
+        return;
+      }
+
+      // ? = open wiki for selected block
+      if (e.key === '?' && selectedNodeId) {
+        const node = useCanvasStore.getState().nodes.find((n) => n.id === selectedNodeId);
+        if (node) {
+          useWikiStore.getState().open((node.data as BlockNodeData).blockType);
+        }
       }
     };
 
@@ -168,6 +178,10 @@ export function Canvas() {
     [setSelectedNode]
   );
 
+  const handleNodeDoubleClick = useCallback((_: React.MouseEvent, node: Node) => {
+    useWikiStore.getState().open((node.data as BlockNodeData).blockType);
+  }, []);
+
   const handlePaneClick = useCallback(() => {
     setSelectedNode(null);
   }, [setSelectedNode]);
@@ -181,6 +195,7 @@ export function Canvas() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeClick={handleNodeClick}
+        onNodeDoubleClick={handleNodeDoubleClick}
         onPaneClick={handlePaneClick}
         onDragOver={handleDragOver}
         onDrop={handleDrop}

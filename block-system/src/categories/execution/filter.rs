@@ -16,7 +16,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -74,12 +74,38 @@ impl FilterBlock {
             description: "Predicate filter that passes only matching rows".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A filter operator evaluates a predicate on each input row and \
-                           outputs only the rows that match. This corresponds to the WHERE \
-                           clause in SQL."
+                overview: "A filter operator evaluates a boolean predicate on each input row \
+                           and passes through only the rows that satisfy the condition. In SQL \
+                           terms, this is the WHERE clause — the gatekeeper that decides which \
+                           rows participate in the rest of the query.\n\n\
+                           Filters are streaming operators: they process one row at a time, \
+                           immediately emitting or discarding each row without needing to buffer \
+                           the entire input. This makes them memory-efficient and composable — \
+                           you can chain multiple filters together, and each one reduces the \
+                           data volume for downstream operators.\n\n\
+                           In a query plan, the filter typically appears after a scan (sequential \
+                           or index) and before operators like sort, join, or aggregation. The \
+                           query optimizer tries to push filters as early as possible in the plan \
+                           (called 'predicate pushdown') to reduce the amount of data flowing \
+                           through expensive operators."
                     .into(),
-                algorithm: "For each input record, evaluate column <op> value. If true, \
-                            emit the record to output. O(n) with no extra space."
+                algorithm: "Filter Algorithm:\n\
+                            \n\
+                            FUNCTION filter(records, column, op, value):\n  \
+                              results = []\n  \
+                              FOR EACH record IN records:\n    \
+                                field = record[column]\n    \
+                                IF field IS NULL:\n      \
+                                  SKIP  // NULL never matches\n    \
+                                match = EVALUATE(field, op, value)\n    \
+                                  // op is one of: eq, ne, lt, le, gt, ge\n    \
+                                IF match:\n      \
+                                  results.append(record)\n  \
+                              selectivity = results.len / records.len * 100\n  \
+                              RETURN results\n\
+                            \n\
+                            NOTE: This is a streaming operator — records can be\n\
+                            emitted immediately without waiting for all input."
                     .into(),
                 complexity: Complexity {
                     time: "O(n) — evaluates predicate on each row".into(),
@@ -89,12 +115,78 @@ impl FilterBlock {
                     "WHERE clause evaluation".into(),
                     "Post-scan filtering".into(),
                     "HAVING clause in aggregations".into(),
+                    "Join predicate residual filtering (non-equi conditions after a join)".into(),
+                    "Security row-level filtering (row-level security policies)".into(),
                 ],
                 tradeoffs: vec![
                     "Simple and fast but must evaluate every input row".into(),
                     "Push-down to storage can avoid reading unneeded pages".into(),
+                    "Filter ordering matters: putting the most selective filter first reduces \
+                     the number of rows evaluated by subsequent filters".into(),
+                    "Complex predicates (LIKE, regex, function calls) are more expensive per \
+                     row than simple comparisons — consider index support for these".into(),
                 ],
-                examples: vec!["PostgreSQL Filter node".into(), "MySQL WHERE evaluation".into()],
+                examples: vec![
+                    "PostgreSQL Filter node — shown in EXPLAIN output when a predicate cannot \
+                     be pushed into the scan itself".into(),
+                    "MySQL WHERE evaluation — applied after the storage engine returns rows".into(),
+                    "SQLite WHERE clause — evaluated during the virtual machine bytecode execution".into(),
+                ],
+                motivation: "Without a filter operator, queries would return every row from the \
+                             scanned table, and the application would have to discard unwanted \
+                             rows itself. This wastes network bandwidth, memory, and CPU time. \
+                             Filters push the selection logic into the database engine, reducing \
+                             the data volume as early as possible in the query pipeline.\n\n\
+                             Filters are also the key to query optimization: the selectivity of \
+                             a filter (what fraction of rows pass) determines which join strategy, \
+                             scan type, and access path the optimizer chooses. Understanding \
+                             selectivity is fundamental to understanding query plans."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("column".into(), "The name of the column to evaluate the predicate against. \
+                                       This must match a field name in the input records. If the \
+                                       column does not exist in a record, that record is filtered \
+                                       out (treated as non-matching). Try different columns to see \
+                                       how selectivity changes based on data distribution.".into()),
+                    ("operator".into(), "The comparison operator to use. Supported values: \
+                                         'eq' (=), 'ne' (!=), 'lt' (<), 'le' (<=), 'gt' (>), \
+                                         'ge' (>=). Equality checks (eq) are the most common in \
+                                         OLTP queries, while range operators (lt, gt, etc.) are \
+                                         common in analytics. The operator affects selectivity: \
+                                         equality on a unique column gives exactly 1 row, while \
+                                         a range might match thousands.".into()),
+                    ("value".into(), "The value to compare against. This is parsed as an integer \
+                                      if possible, otherwise as a float, otherwise as a string. \
+                                      The type must be compatible with the column's data type for \
+                                      meaningful comparisons. For example, comparing a string \
+                                      column with a numeric value may produce unexpected results.".into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "index-scan".into(),
+                        comparison: "An index scan combines the filter predicate with data access: \
+                                     instead of reading all rows and filtering, it uses an index to \
+                                     find only matching rows. This is much faster for selective predicates \
+                                     but requires an index on the filter column. A standalone filter \
+                                     is used when no suitable index exists, or when additional predicates \
+                                     remain after an index scan has been applied.".into(),
+                    },
+                    Alternative {
+                        block_type: "sequential-scan".into(),
+                        comparison: "A sequential scan with a built-in filter predicate achieves the \
+                                     same result as a scan followed by a separate filter block. The \
+                                     separate filter block is useful in the visual pipeline to make \
+                                     the filtering step explicit and tunable independently of the scan.".into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What is predicate pushdown, and why does pushing a filter closer to the \
+                     storage layer improve performance?".into(),
+                    "How does the selectivity of a filter affect the query optimizer's choice \
+                     between a sequential scan and an index scan?".into(),
+                    "Why does filter ordering matter when multiple WHERE conditions are applied, \
+                     and how do databases decide which filter to evaluate first?".into(),
+                ],
             },
             references: vec![Reference {
                 ref_type: ReferenceType::Book,

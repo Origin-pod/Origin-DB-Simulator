@@ -167,6 +167,15 @@ export interface BlockDocumentation {
   use_cases: string[];
   tradeoffs: string[];
   examples: string[];
+  motivation: string;
+  parameter_guide: Record<string, string>;
+  alternatives: WASMAlternative[];
+  suggested_questions: string[];
+}
+
+export interface WASMAlternative {
+  blockType: string;
+  comparison: string;
 }
 
 export interface RustBlockMetadata {

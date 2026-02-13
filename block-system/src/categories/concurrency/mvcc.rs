@@ -33,7 +33,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -184,15 +184,39 @@ impl MVCCBlock {
             description: "Multi-Version Concurrency Control with snapshot isolation".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "MVCC allows multiple transactions to read and write concurrently \
-                           without blocking each other. Writers create new versions instead of \
-                           overwriting, and readers see a consistent snapshot based on their \
-                           start timestamp."
+                overview: "MVCC (Multi-Version Concurrency Control) allows multiple transactions to read and \
+                           write concurrently without blocking each other. Instead of overwriting data in place, \
+                           writers create new versions of each record. Readers see a consistent snapshot of the \
+                           database based on their start timestamp, completely unaffected by concurrent writers.\n\n\
+                           MVCC is the concurrency control mechanism used by most modern databases including \
+                           PostgreSQL, MySQL InnoDB, Oracle, and CockroachDB. It implements snapshot isolation, \
+                           where each transaction sees the database as it existed at the moment the transaction \
+                           began. This eliminates the need for read locks entirely, dramatically improving \
+                           throughput for mixed read/write workloads.\n\n\
+                           Think of MVCC like a document editing system with full version history. When someone \
+                           edits a document, they create a new version rather than modifying the original. Anyone \
+                           who opened the document before the edit still sees the old version. The system needs \
+                           to periodically clean up old versions that nobody is reading anymore — this is garbage \
+                           collection (VACUUM in PostgreSQL)."
                     .into(),
-                algorithm: "Write: create a new version with xmin = current_ts. Delete: set \
-                            xmax on the latest version. Read: walk the version chain to find \
-                            the version visible at the snapshot timestamp. GC: periodically \
-                            remove versions invisible to all active transactions."
+                algorithm: "WRITE(txn_ts, key, data):\n  \
+                           1. Check for write-write conflict:\n     \
+                              If another txn wrote this key and committed after our snapshot -> CONFLICT\n  \
+                           2. Mark the current latest version as deleted (set xmax = txn_ts)\n  \
+                           3. Create new version: Version { data, xmin=txn_ts, xmax=None }\n  \
+                           4. Insert at head of version chain\n  \
+                           5. If versions_created % gc_threshold == 0: trigger GC\n\n\
+                           READ(snapshot_ts, key):\n  \
+                           Walk version chain for key:\n    \
+                             For each version v:\n      \
+                               If v.xmin <= snapshot_ts AND (v.xmax is None OR v.xmax > snapshot_ts):\n        \
+                                 Return v.data  (this version is visible)\n    \
+                             Return None (key does not exist at this snapshot)\n\n\
+                           GARBAGE_COLLECTION():\n  \
+                           min_active = minimum timestamp among all active transactions\n  \
+                           For each key's version chain:\n    \
+                             Remove versions where xmax < min_active\n    \
+                             (These versions are invisible to ALL current and future transactions)"
                     .into(),
                 complexity: Complexity {
                     time: "Read O(v) where v = chain length, Write O(1), GC O(n × v)".into(),
@@ -202,17 +226,61 @@ impl MVCCBlock {
                     "OLTP with mixed read/write workloads".into(),
                     "Snapshot isolation (PostgreSQL default)".into(),
                     "Long-running read queries alongside writes".into(),
+                    "Analytical queries that need a consistent view without blocking writers".into(),
+                    "Time-travel queries that read data as of a past timestamp".into(),
                 ],
                 tradeoffs: vec![
                     "Readers never block writers and vice versa".into(),
                     "Space overhead from multiple versions per key".into(),
                     "GC is necessary to reclaim old versions".into(),
                     "Write-write conflicts on the same key must be detected".into(),
+                    "Version chain traversal slows reads when chains grow long (GC lag)".into(),
+                    "MVCC provides snapshot isolation by default, but not true serializability without extra checks (SSI)".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL MVCC (xmin/xmax system columns)".into(),
-                    "MySQL InnoDB undo logs".into(),
-                    "Oracle Multiversion Read Consistency".into(),
+                    "PostgreSQL MVCC — uses xmin/xmax system columns on every tuple, VACUUM reclaims dead tuples".into(),
+                    "MySQL InnoDB — stores old versions in undo log, reads reconstruct from undo chain".into(),
+                    "Oracle Multiversion Read Consistency — uses undo tablespace for version storage".into(),
+                    "CockroachDB — MVCC with timestamp ordering, built on RocksDB/Pebble storage".into(),
+                ],
+                motivation: "Without MVCC, databases must use locks to prevent readers from seeing partially \
+                             updated data. This means a long-running analytical query would block all writes \
+                             to the rows it is reading, or worse, a write would block all concurrent reads. \
+                             In a busy OLTP system, this lock contention destroys throughput.\n\n\
+                             MVCC solves this by letting readers and writers operate on different versions of \
+                             the same data simultaneously. The cost is additional storage for old versions and \
+                             the need for garbage collection. But the benefit — eliminating read-write contention \
+                             entirely — is so significant that MVCC has become the dominant concurrency control \
+                             strategy in modern databases."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("gc_threshold".into(),
+                     "Controls how often garbage collection runs, measured in number of writes between GC \
+                      cycles. A lower value (10-50) means GC runs frequently, keeping version chains short \
+                      and memory usage low, but adds CPU overhead per write. A higher value (500-10000) \
+                      reduces GC overhead but lets old versions accumulate, increasing memory usage and \
+                      slowing reads that must traverse longer chains. In PostgreSQL, autovacuum is triggered \
+                      by a similar threshold (autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor \
+                      × table size). Recommended: 100 for balanced workloads, lower for write-heavy, higher \
+                      for read-heavy with infrequent updates."
+                        .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "row-lock-2pl".into(),
+                        comparison: "Row-level locking (2PL) guarantees true serializability but blocks readers \
+                                     when a writer holds an exclusive lock. MVCC provides snapshot isolation \
+                                     without read-write blocking, at the cost of extra storage for versions \
+                                     and the need for garbage collection. Choose 2PL for workloads requiring \
+                                     strict serializability with short transactions. Choose MVCC for mixed \
+                                     OLTP/OLAP workloads where long reads should not block writes."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "How does PostgreSQL's VACUUM process work, and what happens if it falls behind?".into(),
+                    "What is the difference between snapshot isolation and serializable isolation in MVCC?".into(),
+                    "How do write-write conflicts get detected, and what should happen when one occurs?".into(),
                 ],
             },
             references: vec![Reference {

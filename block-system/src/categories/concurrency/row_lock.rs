@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -123,15 +123,40 @@ impl RowLockBlock {
             description: "Strict two-phase locking with deadlock detection".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "Two-phase locking (2PL) is the classic concurrency control protocol. \
-                           Transactions acquire locks before accessing data (growing phase) and \
-                           release all locks at once when they finish (shrinking phase). Strict \
-                           2PL holds locks until commit, preventing cascading aborts."
+                overview: "Two-phase locking (2PL) is the classic concurrency control protocol used by \
+                           virtually every relational database to ensure transaction isolation. Transactions \
+                           acquire locks before accessing data (growing phase) and release all locks at once \
+                           when they finish (shrinking phase). Strict 2PL holds locks until commit, preventing \
+                           cascading aborts.\n\n\
+                           In a database system, 2PL sits between the query executor and the storage engine. \
+                           When a transaction wants to read or write a row, it must first acquire the appropriate \
+                           lock (shared for reads, exclusive for writes). The lock manager maintains a lock table \
+                           that tracks which transactions hold which locks, and a wait-for graph to detect deadlocks.\n\n\
+                           Think of it like a library checkout system: you can have many people reading the same \
+                           book (shared locks), but only one person can take it home to edit it (exclusive lock). \
+                           If two people both want to edit the same book, one has to wait. And if Alice is waiting \
+                           for Bob's book while Bob is waiting for Alice's book, you have a deadlock that the \
+                           librarian (deadlock detector) must resolve by asking one person to give up."
                     .into(),
-                algorithm: "Lock request: check lock table. If compatible (S+S), grant. If \
-                            incompatible (S+X or X+any), add to wait-for graph and check for \
-                            cycles. If cycle detected, abort the requesting transaction. On \
-                            commit, release all locks held by the transaction."
+                algorithm: "LOCK_REQUEST(txn_id, resource, mode):\n  \
+                           1. Check lock table for existing lock on resource\n  \
+                           2. If no lock exists:\n     \
+                              Grant lock, add to lock table\n     \
+                              Record in txn_locks[txn_id]\n  \
+                           3. If lock exists and is compatible (S+S):\n     \
+                              Add txn_id to holders set\n  \
+                           4. If lock exists and is incompatible (S+X or X+any):\n     \
+                              a. Add edge txn_id -> holders to wait-for graph\n     \
+                              b. Run cycle detection (DFS from txn_id)\n     \
+                              c. If cycle found: ABORT requesting txn (deadlock victim)\n     \
+                              d. If no cycle: WAIT, then grant when holders release\n\n\
+                           COMMIT(txn_id):\n  \
+                           1. Release ALL locks held by txn_id\n  \
+                           2. Remove txn_id from wait-for graph\n  \
+                           3. Wake up any transactions waiting for released locks\n\n\
+                           DEADLOCK_CHECK(start_txn):\n  \
+                           DFS traversal of wait-for graph from start_txn\n  \
+                           If we reach start_txn again -> cycle -> deadlock"
                     .into(),
                 complexity: Complexity {
                     time: "Lock acquire O(1), deadlock check O(V+E) in wait-for graph".into(),
@@ -141,16 +166,57 @@ impl RowLockBlock {
                     "OLTP workloads with row-level locking".into(),
                     "Serializable isolation level".into(),
                     "Short transactions accessing few rows".into(),
+                    "Banking and financial systems requiring strict consistency".into(),
+                    "Any workload where correctness is more important than throughput".into(),
                 ],
                 tradeoffs: vec![
                     "Guarantees serializability but can cause deadlocks".into(),
                     "Lock overhead per row access".into(),
                     "Long transactions hold locks longer, reducing concurrency".into(),
                     "Deadlock detection adds overhead but prevents indefinite waits".into(),
+                    "Lock escalation (row -> page -> table) can reduce concurrency when many rows are locked".into(),
+                    "Phantom reads require predicate locks or next-key locking (as in InnoDB)".into(),
                 ],
                 examples: vec![
-                    "MySQL InnoDB row locks".into(),
-                    "PostgreSQL row-level locks (FOR UPDATE, FOR SHARE)".into(),
+                    "MySQL InnoDB row locks — uses next-key locking to prevent phantoms".into(),
+                    "PostgreSQL row-level locks (FOR UPDATE, FOR SHARE) with wait queues".into(),
+                    "SQL Server row and key-range locks under SERIALIZABLE isolation".into(),
+                    "Oracle uses row-level locks for writes but MVCC for reads".into(),
+                ],
+                motivation: "Without concurrency control, two transactions modifying the same row simultaneously \
+                             could produce inconsistent results — a 'lost update' where one transaction's changes \
+                             silently overwrite another's. Row-level locking prevents this by ensuring only one \
+                             writer can access a row at a time.\n\n\
+                             Without 2PL specifically, a database might release locks too early (before commit), \
+                             allowing other transactions to read uncommitted data. If that first transaction then \
+                             aborts, you get a 'cascading abort' where dependent transactions must also roll back. \
+                             Strict 2PL eliminates this class of bugs entirely."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("max_locks_per_txn".into(),
+                     "Controls the maximum number of row-level locks a single transaction can hold before \
+                      lock escalation occurs. Lower values (100-500) cause earlier escalation to table-level \
+                      locks, which reduces memory usage but hurts concurrency. Higher values (5000-100000) \
+                      allow more fine-grained locking at the cost of memory. In production databases like \
+                      SQL Server, the default escalation threshold is around 5000 locks. Recommended: start \
+                      at 1000 and increase if you see frequent lock escalation with short transactions."
+                        .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "mvcc".into(),
+                        comparison: "MVCC allows readers and writers to proceed without blocking each other \
+                                     by keeping multiple versions of each row. 2PL blocks readers when a writer \
+                                     holds an exclusive lock. Choose 2PL when you need true serializability and \
+                                     have short transactions. Choose MVCC when you have long-running read queries \
+                                     that should not block writes (most modern OLTP workloads)."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What happens when a deadlock is detected? How does the database choose which transaction to abort?".into(),
+                    "Why does strict 2PL hold all locks until commit instead of releasing read locks early?".into(),
+                    "How does lock escalation work, and when would a database switch from row locks to table locks?".into(),
                 ],
             },
             references: vec![Reference {

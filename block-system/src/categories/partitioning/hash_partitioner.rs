@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -70,14 +70,35 @@ impl HashPartitionerBlock {
             description: "Distributes records across partitions by hashing a key".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "Hash partitioning distributes data across multiple partitions by \
-                           computing a hash of the partition key and using modulo to assign \
-                           each record to a partition. This enables horizontal scaling — each \
-                           partition can live on a different node."
+                overview: "Hash partitioning distributes data across multiple partitions by computing a \
+                           hash of the partition key and using modulo to assign each record to a partition. \
+                           This enables horizontal scaling — each partition can live on a different node, \
+                           allowing the system to handle more data and more queries by adding machines.\n\n\
+                           In a distributed database, the hash partitioner is one of the first components a \
+                           write request encounters. It determines which node owns each piece of data. The \
+                           hash function must be deterministic (same key always maps to the same partition) \
+                           and should distribute keys uniformly to avoid hot spots.\n\n\
+                           Think of hash partitioning like assigning students to classrooms by the first letter \
+                           of their last name. But instead of letters (which produce uneven groups), you use a \
+                           hash function that scrambles the name into a number and then takes modulo N to get \
+                           the classroom number. This produces much more even groups. The downside: if you \
+                           want to find all students whose names start with 'S', you have to check every \
+                           classroom (scatter-gather) because hashing destroyed the alphabetical ordering."
                     .into(),
-                algorithm: "For each record: partition_id = hash(key) % num_partitions. A good \
-                            hash function distributes keys uniformly. Consistent hashing is a \
-                            variant that minimizes data movement when partitions are added/removed."
+                algorithm: "PARTITION(record):\n  \
+                           1. Extract partition key from record\n  \
+                           2. Compute hash: h = hash_mix(key)\n     \
+                              h ^= h >> 33\n     \
+                              h *= 0xff51afd7ed558ccd\n     \
+                              h ^= h >> 33\n     \
+                              h *= 0xc4ceb9fe1a85ec53\n     \
+                              h ^= h >> 33\n  \
+                           3. Assign partition: partition_id = h % num_partitions\n  \
+                           4. Route record to partition_id\n\n\
+                           REBALANCE (when adding partition):\n  \
+                           Simple modulo: ALL records potentially need reassignment\n  \
+                           Consistent hashing: only K/N records move on average\n  \
+                           (where K = total keys, N = total partitions)"
                     .into(),
                 complexity: Complexity {
                     time: "O(1) per record — single hash computation".into(),
@@ -87,17 +108,59 @@ impl HashPartitionerBlock {
                     "Cassandra distributes rows across nodes using Murmur3 hash".into(),
                     "DynamoDB partitions items by hash of the partition key".into(),
                     "CockroachDB splits ranges using hash-based sharding".into(),
+                    "Kafka distributes messages across topic partitions by key hash".into(),
+                    "Redis Cluster uses CRC16 hash slots to partition keys across nodes".into(),
                 ],
                 tradeoffs: vec![
                     "Even distribution depends on key cardinality and hash quality".into(),
                     "Range queries across partitions require scatter-gather".into(),
                     "Adding partitions requires data reshuffling (consistent hashing helps)".into(),
                     "Hot keys defeat the purpose — one partition gets all traffic".into(),
+                    "Cannot efficiently answer range queries (e.g., 'all users with ID 1000-2000')".into(),
+                    "Hash function quality matters — poor hash functions create skewed distributions".into(),
                 ],
                 examples: vec![
-                    "Cassandra's Murmur3Partitioner (default since 1.2)".into(),
-                    "DynamoDB partitions by hash of partition key attribute".into(),
-                    "Kafka topic partitioning by message key hash".into(),
+                    "Cassandra's Murmur3Partitioner (default since 1.2) — maps token range to nodes".into(),
+                    "DynamoDB — partitions by hash of partition key, supports sort key for range queries within partition".into(),
+                    "Kafka — DefaultPartitioner hashes message key to assign topic partitions".into(),
+                    "Redis Cluster — 16384 hash slots distributed across nodes using CRC16".into(),
+                ],
+                motivation: "Without partitioning, all data lives on a single node, which creates a hard \
+                             ceiling on both storage capacity and query throughput. When a table grows beyond \
+                             what one machine can handle, you need to split it across multiple machines.\n\n\
+                             Hash partitioning solves the distribution problem by providing a deterministic, \
+                             uniform mapping from keys to nodes. Any node in the cluster can instantly compute \
+                             which node owns a given key without consulting a central directory. This enables \
+                             both writes and reads to be routed directly to the right node in O(1) time."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("num_partitions".into(),
+                     "The number of partitions to distribute data across. Each partition can be assigned to \
+                      a different node for horizontal scaling. More partitions enable finer-grained load \
+                      balancing but add overhead for cross-partition queries (scatter-gather). Fewer partitions \
+                      are simpler but limit scalability. In Cassandra, the virtual node count (num_tokens) \
+                      serves a similar purpose — default is 256 vnodes per physical node. For Kafka, the \
+                      partition count is typically 3-12 per topic. Recommended: start with 4-8 for development, \
+                      scale to match the number of nodes in production."
+                        .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "range-partitioner".into(),
+                        comparison: "Range partitioning assigns contiguous key ranges to partitions (e.g., \
+                                     A-F to partition 1, G-M to partition 2). This preserves key ordering, \
+                                     enabling efficient range queries within a partition, but is prone to hot \
+                                     spots when certain ranges receive more traffic. Hash partitioning distributes \
+                                     keys uniformly but destroys ordering. Choose hash partitioning for even \
+                                     distribution with point lookups. Choose range partitioning when range queries \
+                                     are common and you can tolerate potential skew."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What is consistent hashing, and how does it reduce data movement when adding or removing nodes?".into(),
+                    "How do you handle hot keys (e.g., a celebrity's profile) that all hash to the same partition?".into(),
+                    "Why does DynamoDB require a partition key AND optional sort key — how does this combine hash and range partitioning?".into(),
                 ],
             },
             references: vec![Reference {

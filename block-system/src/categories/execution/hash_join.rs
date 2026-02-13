@@ -18,7 +18,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -65,14 +65,46 @@ impl HashJoinBlock {
             description: "Build-probe hash join for equi-join queries".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A hash join is the fastest equi-join algorithm when one input fits \
-                           in memory. The build phase loads one input into a hash table keyed \
-                           on the join column. The probe phase scans the other input and looks \
-                           up matches in the hash table."
+                overview: "A hash join is the most efficient join algorithm for equi-join queries \
+                           (WHERE a.id = b.id) when one input fits in memory. It works in two \
+                           phases: the build phase loads the smaller input into an in-memory hash \
+                           table keyed on the join column, and the probe phase streams through the \
+                           larger input, looking up each row's join key in the hash table.\n\n\
+                           Hash joins are the workhorse of modern query engines. They are chosen \
+                           by the optimizer whenever the join predicate is an equality condition \
+                           and the smaller input is estimated to fit in the available memory. \
+                           Unlike nested loop joins (which are O(n*m)), hash joins are O(n+m) — \
+                           a massive improvement for large inputs.\n\n\
+                           Think of it like organizing a party with two guest lists. You take the \
+                           shorter list and create a lookup table (hash table) by name. Then you \
+                           go through the longer list one by one, checking each name against the \
+                           lookup table. For each match, you know that guest is on both lists. \
+                           Building the lookup table takes one pass, and checking takes one pass — \
+                           much faster than comparing every name on list A with every name on list B."
                     .into(),
-                algorithm: "Build: hash each row's join key and insert into hash table. \
-                            Probe: for each probe row, hash the join key and look up matching \
-                            build rows. Emit combined rows for each match."
+                algorithm: "Hash Join Algorithm (Build-Probe):\n\
+                            \n\
+                            // Phase 1: BUILD — create hash table from smaller input\n\
+                            FUNCTION build_phase(build_records, join_column):\n  \
+                              hash_table = new HashMap\n  \
+                              FOR EACH record IN build_records:\n    \
+                                key = record[join_column]\n    \
+                                h = hash(key)\n    \
+                                hash_table[h].append(record)\n  \
+                              RETURN hash_table\n\
+                            \n\
+                            // Phase 2: PROBE — scan larger input and look up matches\n\
+                            FUNCTION probe_phase(probe_records, hash_table, join_column):\n  \
+                              results = []\n  \
+                              FOR EACH probe_rec IN probe_records:\n    \
+                                key = probe_rec[join_column]\n    \
+                                h = hash(key)\n    \
+                                IF h IN hash_table:\n      \
+                                  FOR EACH build_rec IN hash_table[h]:\n        \
+                                    IF build_rec[join_column] == key:  // verify, not just hash\n          \
+                                      combined = merge(build_rec, probe_rec)\n          \
+                                      results.append(combined)\n  \
+                              RETURN results"
                     .into(),
                 complexity: Complexity {
                     time: "O(n + m) average where n = build, m = probe".into(),
@@ -82,13 +114,76 @@ impl HashJoinBlock {
                     "Equi-join queries (WHERE a.id = b.id)".into(),
                     "When one table is much smaller than the other".into(),
                     "Parallel-friendly join strategy".into(),
+                    "Star schema queries joining fact tables with dimension tables".into(),
+                    "Subquery materialization (IN subqueries converted to semi-joins)".into(),
                 ],
                 tradeoffs: vec![
                     "Fastest join for equi-joins but only supports equality predicates".into(),
                     "Build side must fit in memory (or spill to disk)".into(),
                     "No ordering on output".into(),
+                    "Hash collisions degrade performance — a poor hash function or highly \
+                     skewed data can cause many rows to land in the same bucket".into(),
+                    "Spilling to disk (grace hash join) adds significant overhead — the \
+                     optimizer tries to pick the smaller input as the build side to avoid this".into(),
                 ],
-                examples: vec!["PostgreSQL Hash Join".into(), "MySQL hash join (8.0+)".into()],
+                examples: vec![
+                    "PostgreSQL Hash Join — builds a hash table from the inner relation; \
+                     supports parallel hash join since version 11".into(),
+                    "MySQL hash join (8.0+) — added as an alternative to the block nested \
+                     loop join; requires equi-join conditions".into(),
+                    "Oracle hash join — the preferred join method for large tables; supports \
+                     in-memory and on-disk (grace hash join) variants".into(),
+                    "DuckDB and other analytics engines — hash join is the default join \
+                     strategy for columnar databases".into(),
+                ],
+                motivation: "Joining tables is the most common multi-table operation in SQL. \
+                             Without hash join, the database would fall back to nested loop join \
+                             (O(n*m) — checking every pair of rows) or require both inputs to be \
+                             sorted for a merge join. For large tables, nested loop is prohibitively \
+                             slow, and sorting both inputs is expensive.\n\n\
+                             Hash join solves this by building an O(1)-lookup data structure from \
+                             one input, reducing the join cost to O(n+m). This made complex \
+                             analytical queries with multiple joins practical, and is one of the \
+                             key innovations that enabled modern data warehousing."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("join_column".into(), "The column name that must exist in both the build and \
+                                            probe inputs. Rows are matched when they have equal \
+                                            values in this column. This corresponds to the ON clause \
+                                            in SQL (e.g., ON orders.customer_id = customers.id). \
+                                            The column should have compatible data types in both \
+                                            inputs. High-cardinality columns (like IDs) produce \
+                                            fewer hash collisions and better performance. \
+                                            Low-cardinality columns (like status or gender) cause \
+                                            many collisions, degrading to O(n*m) in the worst case.".into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "sort".into(),
+                        comparison: "A sort-merge join sorts both inputs on the join column, then \
+                                     merges them in order. Sort-merge is better when inputs are \
+                                     already sorted (e.g., from an index) or when the result must \
+                                     be in sorted order. Hash join is better for unsorted inputs \
+                                     because it avoids the O(n log n) sort cost. Sort-merge also \
+                                     handles non-equi joins (theta joins) which hash join cannot.".into(),
+                    },
+                    Alternative {
+                        block_type: "sequential-scan".into(),
+                        comparison: "A nested loop join (using sequential scans) checks every row \
+                                     pair — O(n*m). It is the simplest join but only practical for \
+                                     very small inputs or when an index makes the inner loop O(log n). \
+                                     Hash join is dramatically faster for medium-to-large inputs with \
+                                     equi-join predicates.".into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "Why does the optimizer choose the smaller table as the build side, \
+                     and what happens if it gets the estimate wrong?".into(),
+                    "What is a grace hash join, and how does it handle the case when the \
+                     build side does not fit in memory?".into(),
+                    "How does parallel hash join work, and why is it easier to parallelize \
+                     than sort-merge join?".into(),
+                ],
             },
             references: vec![Reference {
                 ref_type: ReferenceType::Book,

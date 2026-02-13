@@ -256,6 +256,19 @@ struct BlockDocResponse {
     use_cases: Vec<String>,
     tradeoffs: Vec<String>,
     examples: Vec<String>,
+    motivation: String,
+    #[serde(rename = "parameter_guide")]
+    parameter_guide: HashMap<String, String>,
+    alternatives: Vec<AlternativeResponse>,
+    #[serde(rename = "suggested_questions")]
+    suggested_questions: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AlternativeResponse {
+    #[serde(rename = "blockType")]
+    block_type: String,
+    comparison: String,
 }
 
 #[derive(Serialize)]
@@ -340,6 +353,13 @@ fn build_block_detail(block_type_str: &str) -> Result<BlockDetailResponse, Strin
         use_cases: doc.use_cases.clone(),
         tradeoffs: doc.tradeoffs.clone(),
         examples: doc.examples.clone(),
+        motivation: doc.motivation.clone(),
+        parameter_guide: doc.parameter_guide.clone(),
+        alternatives: doc.alternatives.iter().map(|a| AlternativeResponse {
+            block_type: a.block_type.clone(),
+            comparison: a.comparison.clone(),
+        }).collect(),
+        suggested_questions: doc.suggested_questions.clone(),
     };
 
     let references = meta.references.iter().map(|r| {

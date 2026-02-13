@@ -18,7 +18,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -83,13 +83,38 @@ impl ClusteredStorageBlock {
             description: "Records physically ordered by cluster key for fast range scans".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "Clustered storage keeps records physically sorted by a cluster key. \
-                           This makes range scans on that key sequential I/O instead of random. \
-                           InnoDB tables are always clustered by the primary key."
+                overview: "Clustered storage keeps records physically sorted by a designated cluster \
+                           key on disk. Unlike a heap file where records land on whichever page has \
+                           space, clustered storage ensures that records with adjacent key values are \
+                           stored on adjacent pages. This means range scans on the cluster key become \
+                           fast sequential I/O instead of random page fetches.\n\n\
+                           In relational databases, a clustered index defines the physical order of \
+                           the table itself — the table IS the index. MySQL InnoDB, for example, \
+                           always organizes every table as a clustered index on the primary key. \
+                           Secondary indexes then point to the primary key rather than to a physical \
+                           page location.\n\n\
+                           Think of clustered storage like a dictionary: words are stored in \
+                           alphabetical order, so finding all words starting with 'M' means \
+                           flipping to the M section and reading sequentially. But inserting a \
+                           new word in the middle means shifting everything after it — which is \
+                           why out-of-order inserts cause expensive page splits."
                     .into(),
-                algorithm: "Insert: place record in sorted position by cluster key. If the \
-                            record doesn't fit page order, simulate a page split. Range scan: \
-                            read pages sequentially since data is already sorted."
+                algorithm: "INSERT:\n  \
+                           1. Extract the cluster key value from the record\n  \
+                           2. Compare with the last inserted key value\n  \
+                           3. If new key >= last key: in-order insert (append to current position)\n  \
+                           4. If new key < last key: out-of-order insert (page split simulated)\n  \
+                           5. Insert into BTreeMap which maintains sorted order automatically\n  \
+                           6. Update last_key_value for next comparison\n\n\
+                           RANGE SCAN (on cluster key):\n  \
+                           1. Seek to the start key in the sorted structure (O(log n))\n  \
+                           2. Read sequentially until end key is reached\n  \
+                           3. All matching records are physically contiguous — minimal I/O\n\n\
+                           PAGE SPLIT (out-of-order insert):\n  \
+                           1. When a record arrives with a key smaller than existing entries\n  \
+                           2. The page containing that key range must be split\n  \
+                           3. Half the entries move to a new page to make room\n  \
+                           4. This is expensive — it requires rewriting two pages"
                     .into(),
                 complexity: Complexity {
                     time: "Range scan O(k) for k matching pages, Insert O(log n)".into(),
@@ -99,15 +124,80 @@ impl ClusteredStorageBlock {
                     "Primary key range queries".into(),
                     "Time-series data ordered by timestamp".into(),
                     "Sequential access patterns".into(),
+                    "Tables where most queries filter or sort by the primary key".into(),
+                    "Foreign key lookups in parent-child relationships (e.g., all orders for a customer)".into(),
                 ],
                 tradeoffs: vec![
                     "Fast range scans on cluster key, slow on other columns".into(),
                     "Random inserts cause page splits".into(),
                     "Only one cluster key per table".into(),
+                    "Secondary index lookups require a double lookup (index -> PK -> row)".into(),
+                    "Choosing a poor cluster key (e.g., UUID) leads to constant page splits and fragmentation".into(),
                 ],
                 examples: vec![
-                    "MySQL InnoDB clustered index".into(),
-                    "SQL Server clustered index".into(),
+                    "MySQL InnoDB — every table is clustered by the primary key; secondary indexes store the PK value".into(),
+                    "SQL Server clustered indexes — explicitly created, default on PRIMARY KEY constraint".into(),
+                    "Oracle Index-Organized Tables (IOT) — opt-in clustered storage for specific tables".into(),
+                ],
+                motivation: "Without clustered storage, range queries on a key must perform random I/O \
+                             — fetching pages scattered across disk for each matching row. For a query \
+                             like SELECT * FROM orders WHERE customer_id BETWEEN 100 AND 200, a heap \
+                             file would require jumping to a different page for each matching order.\n\n\
+                             Clustered storage solves this by physically co-locating records with similar \
+                             key values. The same range query now reads a contiguous run of pages \
+                             sequentially, which can be 10-100x faster on spinning disks and still \
+                             significantly faster on SSDs due to prefetching and reduced seeks."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("cluster_key".into(),
+                     "The column used to physically sort all records. This is the most important \
+                      decision for a clustered table. Choose a column that is frequently used in \
+                      range queries, ORDER BY clauses, or JOIN conditions. Monotonically increasing \
+                      keys (like auto-increment integers or timestamps) are ideal because inserts \
+                      always append to the end, avoiding page splits. UUIDs are a poor choice \
+                      because they are random, causing constant page splits and fragmentation. \
+                      Default is 'id'."
+                         .into()),
+                    ("page_size".into(),
+                     "Number of records per logical page. Larger pages (e.g., 1000-10000) reduce \
+                      the number of pages and metadata overhead but mean more data is moved during \
+                      a page split. Smaller pages (e.g., 10-50) result in more frequent page \
+                      splits but each split is cheaper. Recommended: 100-1000 for most workloads. \
+                      Range: 10-10000. Default is 100."
+                         .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "heap-file-storage".into(),
+                        comparison: "Heap files store records in insertion order with no sorting. \
+                                     They have faster inserts (no page splits) but range scans \
+                                     require full table scans or an index. Choose heap when insert \
+                                     throughput matters more than range scan speed, or when you will \
+                                     rely on separate indexes for all queries."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "lsm-tree-storage".into(),
+                        comparison: "LSM trees buffer writes in memory and flush sorted runs, \
+                                     achieving very high write throughput. They support range scans \
+                                     but data is spread across levels, making scans more expensive \
+                                     than clustered storage. Choose LSM for write-dominated workloads. \
+                                     Choose clustered when range scan performance is the top priority."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "columnar-storage".into(),
+                        comparison: "Columnar storage organizes data by column rather than by row. \
+                                     It is designed for analytical queries that aggregate over few \
+                                     columns. Choose columnar for OLAP. Choose clustered for OLTP \
+                                     workloads with frequent range queries on the primary key."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "Why does using UUIDs as the cluster key cause performance problems?".into(),
+                    "How does a page split work, and why is it expensive?".into(),
+                    "What is the difference between a clustered index and a secondary index in InnoDB?".into(),
                 ],
             },
             references: vec![Reference {

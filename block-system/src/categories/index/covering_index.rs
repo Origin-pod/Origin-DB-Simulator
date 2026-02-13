@@ -19,7 +19,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -81,34 +81,129 @@ impl CoveringIndexBlock {
             description: "Index with included columns for index-only scans".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A covering index includes extra column values alongside the index key. \
-                           When a query requests only columns that are stored in the index, the \
-                           database can satisfy the query entirely from the index without reading \
-                           the base table. This eliminates random I/O to the heap."
+                overview: "A covering index is an index that stores additional column values \
+                           alongside the index key, enabling the database to answer certain queries \
+                           entirely from the index without ever touching the base table. This is \
+                           called an 'index-only scan' and it eliminates the random I/O cost of \
+                           fetching rows from the heap.\n\n\
+                           In a typical B-tree index, a lookup returns a TupleId (page + slot), \
+                           and the database must then read that page from the heap to get the \
+                           actual row data. For a query like SELECT name, email FROM users WHERE \
+                           id = 42, a plain index on 'id' finds the TupleId, then reads the heap \
+                           page. A covering index on 'id' that INCLUDEs 'name' and 'email' can \
+                           return both values directly from the index — one I/O instead of two.\n\n\
+                           Think of a covering index like a phone book that also lists email \
+                           addresses. If you only need someone's phone number and email, the phone \
+                           book covers your query completely. You never need to visit the person's \
+                           house (the heap) to get that information. But the phone book is thicker \
+                           (more storage) because it carries extra data."
                     .into(),
-                algorithm: "Build: for each record, store key + included column values in a \
-                            sorted structure. Lookup: search by key, return included columns \
-                            directly. If the query needs columns not in the index, a table \
-                            lookup is required."
+                algorithm: "BUILD INDEX:\n  \
+                           1. For each incoming record:\n    \
+                              a. Extract the key column value\n    \
+                              b. Extract values for each included_column\n    \
+                              c. Create a CoveringEntry with (key, covered_values map)\n    \
+                              d. Insert into BTreeMap indexed by key string\n  \
+                           2. Multiple records with the same key are stored in a Vec\n\n\
+                           INDEX-ONLY LOOKUP:\n  \
+                           1. Convert lookup_key to string and search in the BTreeMap\n  \
+                           2. If found:\n    \
+                              a. Increment index_only_scans counter\n    \
+                              b. For each matching entry:\n      \
+                                 - Build a Record with key + covered column values\n      \
+                                 - Mark record with _index_only = true\n      \
+                                 - Increment table_lookups_avoided\n    \
+                              c. Return all matching records\n  \
+                           3. If not found: return empty (the key does not exist)\n\n\
+                           WHEN IS THE INDEX NOT COVERING?\n  \
+                           If the query SELECTs a column that is NOT in included_columns,\n  \
+                           the database must still fetch the full row from the heap table.\n  \
+                           This is no different from a plain B-tree index lookup."
                     .into(),
                 complexity: Complexity {
                     time: "Lookup O(log n), Range scan O(log n + k)".into(),
-                    space: "O(n × (1 + included_columns)) — larger than a plain index".into(),
+                    space: "O(n * (1 + included_columns)) — larger than a plain index".into(),
                 },
                 use_cases: vec![
                     "Queries that SELECT only indexed + included columns".into(),
                     "Avoiding expensive heap lookups on wide tables".into(),
                     "CREATE INDEX ... INCLUDE (col1, col2) in PostgreSQL".into(),
+                    "High-frequency queries on hot paths where eliminating one I/O per query matters".into(),
+                    "Reporting queries that always read the same small set of columns".into(),
                 ],
                 tradeoffs: vec![
                     "Eliminates table lookups for covered queries".into(),
                     "Larger index size due to stored column copies".into(),
                     "Updates to included columns must update the index too".into(),
+                    "Diminishing returns when many columns are included — at some point the index is as big as the table".into(),
+                    "Only beneficial when queries consistently use the same column subset; ad-hoc queries may not benefit".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL INCLUDE indexes".into(),
-                    "SQL Server covering indexes".into(),
-                    "MySQL composite indexes used as covering".into(),
+                    "PostgreSQL INCLUDE indexes — CREATE INDEX idx ON users (id) INCLUDE (name, email)".into(),
+                    "SQL Server covering indexes — included columns stored only in leaf nodes".into(),
+                    "MySQL composite indexes used as covering — leftmost prefix serves as key, remaining columns serve as included".into(),
+                    "Oracle index-only access paths — optimizer detects when all needed columns are in the index".into(),
+                ],
+                motivation: "A standard B-tree index speeds up finding which rows match a predicate, \
+                             but the database still has to visit the heap table to read the actual \
+                             column values. For a query that matches 1000 rows, that means 1000 \
+                             random I/O operations to the heap — each potentially a disk seek.\n\n\
+                             The covering index solves this by storing copies of frequently-needed \
+                             columns right in the index itself. The query can be answered entirely \
+                             from the index with zero heap lookups. This trades extra storage space \
+                             and write overhead for dramatically faster reads on specific query \
+                             patterns. In practice, adding one or two INCLUDE columns to a hot \
+                             index can reduce query latency by 50% or more."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("key_column".into(),
+                     "The column to index on (the search key). This is the column used in WHERE \
+                      clauses to find matching rows. The key determines the sort order of the \
+                      index and enables both point lookups and range scans. Choose the column \
+                      most frequently filtered on. Default is 'id'."
+                         .into()),
+                    ("included_columns".into(),
+                     "Comma-separated list of columns to include in the index alongside the key. \
+                      These columns are stored in the index leaf nodes so that queries requesting \
+                      only these columns can be served without touching the base table (index-only \
+                      scan). Include columns that are frequently in the SELECT list of queries \
+                      that filter by the key_column. Adding too many columns makes the index \
+                      bloated. A good rule of thumb: include 1-3 columns that cover your most \
+                      common query pattern. Example: 'name,email' for a user lookup index."
+                         .into()),
+                    ("lookup_key".into(),
+                     "The key value to search for during execution. When empty, the block only \
+                      builds the index from incoming records without performing a lookup. When \
+                      set, the block performs an index-only lookup after building. This simulates \
+                      the two phases of index usage: build time (during INSERT) and query time \
+                      (during SELECT). Default is empty (build only)."
+                         .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "btree-index".into(),
+                        comparison: "A plain B-tree index stores only keys and TupleIds. Lookups \
+                                     require a follow-up heap access to get actual column values. \
+                                     Choose a plain B-tree when your queries always need columns \
+                                     not in the index (e.g., SELECT *). Choose a covering index \
+                                     when your queries consistently SELECT a small set of columns \
+                                     that can be included in the index."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "hash-index".into(),
+                        comparison: "Hash indexes provide O(1) equality lookups but store no extra \
+                                     columns and cannot do range scans. Choose hash for the fastest \
+                                     equality-only lookups when you will always fetch the full row. \
+                                     Choose covering index when you want to avoid the heap lookup \
+                                     entirely and need sorted access."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "How do I decide which columns to INCLUDE in a covering index?".into(),
+                    "What is the storage overhead of a covering index compared to a plain B-tree index?".into(),
+                    "When does a covering index stop being beneficial and become a liability?".into(),
                 ],
             },
             references: vec![Reference {

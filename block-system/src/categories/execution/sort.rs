@@ -17,7 +17,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -74,28 +74,132 @@ impl SortBlock {
             description: "Sort records by a column with in-memory or external sort".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A sort operator orders input records by a specified column. When \
-                           the data fits in memory, a standard O(n log n) sort is used. For \
-                           larger datasets, an external merge sort divides data into sorted \
-                           runs that are merged."
+                overview: "A sort operator orders input records by a specified column. It is one \
+                           of the most fundamental database operations, required by ORDER BY \
+                           clauses, merge joins, duplicate elimination (DISTINCT), and grouped \
+                           aggregations. Sorting is a 'blocking' operator: it must consume all \
+                           input before it can produce any output.\n\n\
+                           When the data fits in memory, a standard O(n log n) sort is used \
+                           (Rust's pdqsort, a pattern-defeating quicksort). When the data exceeds \
+                           the memory limit, an external merge sort is used: the input is divided \
+                           into sorted runs that fit in memory, each run is sorted and written to \
+                           temporary storage, then all runs are merged using a k-way merge.\n\n\
+                           Think of sorting as organizing a deck of cards. If you have a small \
+                           deck, you can spread them all on a table and sort directly. But if you \
+                           have thousands of cards and a small table, you sort small piles first, \
+                           then merge the sorted piles together — that is external merge sort."
                     .into(),
-                algorithm: "In-memory: standard sort (Rust's pdqsort). External: split input \
-                            into sorted runs of memory_limit size, then k-way merge the runs."
+                algorithm: "Sort Algorithm (In-Memory + External):\n\
+                            \n\
+                            FUNCTION sort(records, column, descending, memory_limit):\n  \
+                              IF records.len <= memory_limit:\n    \
+                                // In-memory sort (pdqsort / quicksort)\n    \
+                                records.sort_by(|a, b| compare(a[column], b[column]))\n    \
+                                IF descending: records.reverse()\n    \
+                                RETURN records\n  \
+                              ELSE:\n    \
+                                // External merge sort\n    \
+                                runs = []\n    \
+                                FOR EACH chunk of memory_limit records:\n      \
+                                  chunk.sort_by(column)\n      \
+                                  runs.append(chunk)  // write to temp storage\n    \
+                                \n    \
+                                // K-way merge\n    \
+                                result = []\n    \
+                                WHILE any run has records:\n      \
+                                  Pick the run with the smallest (or largest) front element\n      \
+                                  Move that element to result\n    \
+                                RETURN result"
                     .into(),
                 complexity: Complexity {
-                    time: "O(n log n) in-memory, O(n log n × log(n/M)) external".into(),
+                    time: "O(n log n) in-memory, O(n log n * log(n/M)) external".into(),
                     space: "O(n) in-memory, O(M) external where M = memory limit".into(),
                 },
                 use_cases: vec![
                     "ORDER BY clause".into(),
                     "Input to merge join".into(),
                     "Top-K queries (with limit)".into(),
+                    "DISTINCT elimination — sort then remove adjacent duplicates".into(),
+                    "GROUP BY with sort-based aggregation".into(),
                 ],
                 tradeoffs: vec![
                     "Blocking operator — must read all input before producing output".into(),
                     "External sort is slower but handles arbitrarily large data".into(),
+                    "Sort is unnecessary when an index already provides the desired order — \
+                     the optimizer can use an index scan to avoid sorting entirely".into(),
+                    "Memory limit trades latency for resource usage: a larger limit avoids \
+                     external sort overhead but consumes more RAM per query".into(),
                 ],
-                examples: vec!["PostgreSQL Sort node".into(), "MySQL filesort".into()],
+                examples: vec![
+                    "PostgreSQL Sort node — appears in EXPLAIN when ORDER BY cannot be \
+                     satisfied by an index; uses quicksort in-memory and external merge \
+                     sort when work_mem is exceeded".into(),
+                    "MySQL filesort — MySQL's name for an explicit sort operation; can use \
+                     a single-pass or two-pass algorithm depending on row width".into(),
+                    "SQLite sorter — uses B-tree based temporary storage for external sort".into(),
+                ],
+                motivation: "Ordering data is one of the most common operations in database \
+                             queries. Users expect results in a specific order (by date, by \
+                             name, by price), and many internal operations (merge join, \
+                             duplicate elimination, grouped aggregation) require sorted input \
+                             to work correctly.\n\n\
+                             Without a sort operator, the database could not support ORDER BY, \
+                             and many query plans would fall back to less efficient alternatives. \
+                             Understanding the difference between in-memory and external sort \
+                             helps explain why databases have memory configuration parameters \
+                             (like PostgreSQL's work_mem) and why exceeding them causes a \
+                             dramatic performance drop."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("sort_column".into(), "The column name to sort by. The sort compares values \
+                                            in this column across all input records. If a record \
+                                            is missing this column, it is treated as NULL and \
+                                            sorted to a default position. Try sorting on different \
+                                            columns to see how data distribution affects the number \
+                                            of comparisons (already-sorted data requires fewer).".into()),
+                    ("descending".into(), "When true, sorts in descending order (largest first). \
+                                           When false (default), sorts in ascending order (smallest \
+                                           first). This corresponds to ASC/DESC in SQL. The cost \
+                                           of sorting is the same regardless of direction — only \
+                                           the comparison function is inverted.".into()),
+                    ("memory_limit".into(), "Maximum number of records to sort in memory before \
+                                             switching to external merge sort. This simulates \
+                                             PostgreSQL's work_mem parameter. When the input \
+                                             exceeds this limit, the sort creates multiple sorted \
+                                             runs and merges them. Watch the external_runs and \
+                                             sort_type metrics: sort_type=0 means in-memory, \
+                                             sort_type=1 means external. Start with 10000 and try \
+                                             lowering it to force external sort and observe the \
+                                             performance impact. Range: 10 to 1000000 records.".into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "index-scan".into(),
+                        comparison: "If the desired sort order matches an existing index, the \
+                                     database can perform an index scan that returns rows already \
+                                     in sorted order, eliminating the need for an explicit sort. \
+                                     This is the optimizer's preferred strategy when applicable \
+                                     because it avoids the O(n log n) sort cost entirely. However, \
+                                     an explicit sort is needed when no matching index exists or \
+                                     when the sort key involves expressions or multiple columns.".into(),
+                    },
+                    Alternative {
+                        block_type: "hash-join".into(),
+                        comparison: "For join operations, a sort-merge join (which uses sort on both \
+                                     inputs) is an alternative to hash join. Sort-merge join is \
+                                     preferable when inputs are already sorted or when the output \
+                                     must be in sorted order. Hash join is faster for unsorted \
+                                     inputs with equi-join predicates.".into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What is PostgreSQL's work_mem parameter, and how does increasing it \
+                     prevent external sorts?".into(),
+                    "Why is sort a 'blocking' operator, and how does this affect query \
+                     latency for the first result row?".into(),
+                    "How can a database avoid sorting entirely by using an index that \
+                     already provides the desired order?".into(),
+                ],
             },
             references: vec![Reference {
                 ref_type: ReferenceType::Book,

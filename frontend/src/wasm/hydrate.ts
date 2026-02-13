@@ -46,6 +46,13 @@ export function hydrateBlockRegistry(): boolean {
         useCases: detail.documentation.use_cases,
         tradeoffs: detail.documentation.tradeoffs,
         examples: detail.documentation.examples,
+        motivation: detail.documentation.motivation,
+        parameterGuide: detail.documentation.parameter_guide,
+        alternatives: detail.documentation.alternatives?.map((a) => ({
+          blockType: a.blockType,
+          comparison: a.comparison,
+        })),
+        suggestedQuestions: detail.documentation.suggested_questions,
       };
 
       // Add references

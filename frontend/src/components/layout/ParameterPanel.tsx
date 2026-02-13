@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { X, Settings, Trash2, Info, HelpCircle, RotateCcw, BookOpen } from 'lucide-react';
+import { X, Settings, Trash2, Info, HelpCircle, RotateCcw, BookOpen, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { BlockEducationPanel } from '@/components/education/BlockEducationPanel';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { useWikiStore } from '@/stores/wikiStore';
 import {
   CATEGORY_COLORS,
   DATA_TYPE_COLORS,
@@ -590,7 +591,16 @@ export function ParameterPanel() {
           /* Learn tab — education content expanded */
           <div className="p-4">
             {blockDef ? (
-              <BlockEducationPanel block={blockDef} compact={false} />
+              <>
+                <BlockEducationPanel block={blockDef} compact={false} />
+                <button
+                  onClick={() => useWikiStore.getState().open(data.blockType)}
+                  className="mt-3 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Open full wiki
+                </button>
+              </>
             ) : (
               <p className="text-sm text-gray-500 text-center py-8">
                 No documentation available for this block.

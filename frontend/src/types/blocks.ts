@@ -28,6 +28,16 @@ export interface BlockDocumentation {
   complexity?: { time: string; space: string };
   useCases?: string[];
   tradeoffs?: string[];
+  // Wiki fields
+  motivation?: string;
+  parameterGuide?: Record<string, string>;
+  alternatives?: BlockAlternative[];
+  suggestedQuestions?: string[];
+}
+
+export interface BlockAlternative {
+  blockType: string;
+  comparison: string;
 }
 
 export interface BlockReference {

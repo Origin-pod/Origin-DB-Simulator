@@ -28,7 +28,7 @@ use std::collections::HashMap;
 
 use crate::categories::TupleId;
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -115,14 +115,45 @@ impl HashIndexBlock {
             description: "Hash-based index for O(1) point lookups with bucket chaining".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A hash index provides constant-time average-case point lookups by \
-                           hashing keys to bucket positions. Collisions are resolved via chaining \
-                           (each bucket holds a list of entries). Unlike B-trees, hash indexes \
-                           cannot serve range queries."
+                overview: "A hash index provides constant-time O(1) average-case point lookups by \
+                           hashing key values to bucket positions in an array. Each bucket holds a \
+                           chain (linked list) of entries that hashed to the same position, resolving \
+                           collisions. This makes hash indexes the fastest structure for exact equality \
+                           lookups — faster than B-trees — but they cannot answer range queries or \
+                           return results in sorted order.\n\n\
+                           In a database system, hash indexes are used when the access pattern is \
+                           exclusively equality-based: WHERE id = 42, hash joins, or in-memory \
+                           caches. The hash function maps any key value to a bucket number in O(1), \
+                           and the chain within that bucket is typically very short (1-2 entries) if \
+                           the load factor is well-managed.\n\n\
+                           Think of a hash index like a coat check at a theater. You hand over your \
+                           coat (key), receive a numbered ticket (hash), and your coat goes on the \
+                           rack at that number. Retrieval is instant — go to rack number, grab coat. \
+                           But you cannot ask 'give me all coats from tickets 10 to 20' — the ticket \
+                           numbers have no meaningful order."
                     .into(),
-                algorithm: "Insert: hash key → bucket index, append to chain. If load factor \
-                            exceeds threshold, double the bucket count and rehash all entries. \
-                            Lookup: hash key → bucket index, scan chain for match."
+                algorithm: "INSERT:\n  \
+                           1. Compute hash(key) mod bucket_count → bucket_index\n  \
+                           2. If bucket is non-empty, increment collision_count\n  \
+                           3. Append (key, TupleId) to the bucket's chain\n  \
+                           4. Increment total_keys\n  \
+                           5. Check load_factor = total_keys / bucket_count\n  \
+                           6. If load_factor > max_load_factor:\n    \
+                              a. Double the bucket_count\n    \
+                              b. Rehash all existing entries into new buckets\n    \
+                              c. Increment rehash_count\n\n\
+                           LOOKUP:\n  \
+                           1. Compute hash(key) mod bucket_count → bucket_index\n  \
+                           2. Scan the chain at buckets[bucket_index]\n  \
+                           3. For each entry, compare entry.key == search_key\n  \
+                           4. Return TupleId on match, None if chain exhausted\n  \
+                           5. Average chain length ≈ load_factor (typically < 1)\n\n\
+                           REHASH:\n  \
+                           1. Allocate new bucket array of size 2 * old_size\n  \
+                           2. For each entry in all old buckets:\n    \
+                              Recompute hash(key) mod new_size → new bucket\n  \
+                           3. Cost: O(n) — must touch every entry once\n  \
+                           4. Amortized over inserts: O(1) per insert"
                     .into(),
                 complexity: Complexity {
                     time: "O(1) average lookup/insert, O(n) worst case with many collisions"
@@ -133,15 +164,80 @@ impl HashIndexBlock {
                     "Equality lookups (WHERE id = ?)".into(),
                     "Join operations (hash join build side)".into(),
                     "Primary key constraint enforcement".into(),
+                    "In-memory session stores and caches with key-based access".into(),
+                    "Deduplication — quickly checking if a key already exists".into(),
                 ],
                 tradeoffs: vec![
                     "O(1) lookups but no range scan support".into(),
                     "Rehashing is expensive (O(n)) but amortized over inserts".into(),
                     "Performance degrades if hash function has poor distribution".into(),
+                    "Cannot return results in sorted order — ORDER BY requires separate sorting".into(),
+                    "Memory usage is less predictable than B-trees due to bucket chaining and rehash doubling".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL hash indexes".into(),
-                    "In-memory hash tables for hash joins".into(),
+                    "PostgreSQL hash indexes — recreated as WAL-logged crash-safe indexes in PostgreSQL 10+".into(),
+                    "In-memory hash tables for hash joins — used by all major query engines during JOIN execution".into(),
+                    "Redis — in-memory key-value store backed entirely by hash tables".into(),
+                    "Java HashMap / Python dict — same chaining concept used in programming language standard libraries".into(),
+                ],
+                motivation: "B-tree lookups are O(log n), which means 3-4 page reads for a million-row \
+                             table. For workloads that consist almost entirely of exact equality lookups \
+                             (e.g., WHERE session_id = 'abc123'), even 3 page reads is more than \
+                             necessary.\n\n\
+                             The hash index solves this by providing true O(1) lookups — a single hash \
+                             computation and typically one page read. This makes hash indexes ideal for \
+                             in-memory caches, session stores, and any scenario where you always look up \
+                             by an exact key and never need range queries or sorting."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("initial_buckets".into(),
+                     "The starting number of hash buckets. More buckets means lower initial load \
+                      factor and fewer collisions, but wastes memory if the table is small. Fewer \
+                      initial buckets save memory but trigger earlier rehashing. Powers of 2 are \
+                      recommended because modulo operations on powers of 2 can be optimized to \
+                      bitwise AND. Recommended: set to roughly the expected number of entries \
+                      divided by the load factor. Range: 4-65536. Default is 64."
+                         .into()),
+                    ("max_load_factor".into(),
+                     "The threshold ratio of entries/buckets that triggers a rehash. Lower values \
+                      (e.g., 0.5) keep chains very short for faster lookups but use more memory \
+                      and trigger more rehashes. Higher values (e.g., 1.5-2.0) pack more entries \
+                      per bucket, saving memory but increasing average chain length and lookup \
+                      time. The sweet spot is 0.7-0.75 (used by Java HashMap and most \
+                      implementations). Range: 0.1-2.0. Default is 0.75."
+                         .into()),
+                    ("key_column".into(),
+                     "The column whose values are hashed to build the index. Choose the column \
+                      most frequently used in equality predicates (WHERE col = ?). The hash \
+                      function works on any JSON value type (numbers, strings). Avoid indexing \
+                      columns you will use in range queries — hash indexes cannot help with \
+                      those. Default is 'id'."
+                         .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "btree-index".into(),
+                        comparison: "B-tree indexes support both equality lookups (O(log n)) and range \
+                                     scans, and return results in sorted order. Hash indexes are faster \
+                                     for pure equality lookups (O(1)) but cannot do range scans at all. \
+                                     Choose hash when your queries are exclusively WHERE col = ?. Choose \
+                                     B-tree when you also need BETWEEN, ORDER BY, or prefix matching."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "covering-index".into(),
+                        comparison: "A covering index stores extra columns alongside the key to enable \
+                                     index-only scans. It uses a B-tree structure internally. Choose \
+                                     hash for the fastest possible equality lookups when you will always \
+                                     fetch the full row from the table. Choose covering when you want to \
+                                     avoid the table lookup entirely for specific queries."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What happens to lookup performance as the load factor increases beyond 1.0?".into(),
+                    "Why can't hash indexes support range queries like WHERE price BETWEEN 10 AND 50?".into(),
+                    "How does the rehash operation work, and why is it O(n) but amortized O(1) per insert?".into(),
                 ],
             },
             references: vec![Reference {

@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -72,13 +72,41 @@ impl IndexScanBlock {
             description: "Uses an index to fetch only matching records from storage".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "An index scan uses a secondary index to find the locations (TupleIds) \
-                           of matching records, then fetches only those records from the storage \
-                           layer. This avoids reading the entire table."
+                overview: "An index scan uses a secondary index (such as a B-tree or hash index) \
+                           to find the exact locations of matching records, then fetches only \
+                           those records from the storage layer. Instead of reading every page \
+                           in the table, it reads only the pages that contain matching rows.\n\n\
+                           In a database system, the query optimizer chooses an index scan when \
+                           it estimates that the query is selective enough — meaning only a small \
+                           fraction of rows match the predicate. The index provides a shortcut: \
+                           it maps search keys to TupleIds (page_id, slot_id), which tell the \
+                           storage layer exactly where to find each matching row.\n\n\
+                           Think of it like using the index at the back of a textbook: instead \
+                           of reading every page to find references to 'B-tree', you look up \
+                           'B-tree' in the index, get the page numbers, and flip directly to \
+                           those pages. This is fast when there are few references, but slower \
+                           than reading straight through if almost every page contains the term."
                     .into(),
-                algorithm: "Receive lookup results with _page_id/_slot_id from an index. Match \
-                            those against stored records. Each distinct page accessed counts as \
-                            a random I/O. Return matched records."
+                algorithm: "Index Scan Algorithm:\n\
+                            \n\
+                            FUNCTION index_scan(index_results, storage, limit):\n  \
+                              // Phase 1: Collect TupleIds from index\n  \
+                              index_set = SET of (page_id, slot_id) from index_results\n  \
+                              pages_accessed = empty SET\n  \
+                              matched = []\n  \
+                              \n  \
+                              // Phase 2: Fetch matching records from storage\n  \
+                              FOR EACH record IN storage:\n    \
+                                pid = record._page_id\n    \
+                                sid = record._slot_id\n    \
+                                IF (pid, sid) IN index_set:\n      \
+                                  pages_accessed.add(pid)\n      \
+                                  matched.append(record)\n      \
+                                  IF limit > 0 AND matched.len >= limit:\n        \
+                                    BREAK\n  \
+                              \n  \
+                              random_ios = pages_accessed.size  // each distinct page = 1 I/O\n  \
+                              RETURN matched"
                     .into(),
                 complexity: Complexity {
                     time: "O(k × log n) for k results using a B-tree index, O(k) with hash index"
@@ -89,15 +117,64 @@ impl IndexScanBlock {
                     "Selective queries (WHERE id = ?, WHERE price < 100)".into(),
                     "Queries that return a small fraction of the table".into(),
                     "Covering index queries".into(),
+                    "Primary key lookups (WHERE id = 42) — the most common index scan".into(),
+                    "Range queries on indexed columns (WHERE date BETWEEN '2024-01-01' AND '2024-01-31')".into(),
                 ],
                 tradeoffs: vec![
                     "Fast for selective queries but slower than seq scan for non-selective ones".into(),
                     "Random I/O pattern (one page fetch per matched record) is less cache-friendly".into(),
                     "Requires a compatible index to exist".into(),
+                    "Each matched row may be on a different page, causing many small random reads \
+                     rather than a few large sequential reads — the cost per row is higher".into(),
+                    "Index-only scans (covering indexes) can avoid the heap fetch entirely, \
+                     returning data directly from the index leaf pages".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL Index Scan / Index Only Scan".into(),
-                    "MySQL InnoDB secondary index lookup + clustered index fetch".into(),
+                    "PostgreSQL Index Scan / Index Only Scan — the planner estimates row count \
+                     and chooses index scan when selectivity is low enough".into(),
+                    "MySQL InnoDB secondary index lookup + clustered index fetch — secondary \
+                     index leaves contain the primary key, requiring a second B-tree traversal".into(),
+                    "SQLite index scan — walks the index B-tree, then fetches rows by rowid".into(),
+                    "Oracle index range scan — efficiently handles BETWEEN and inequality predicates".into(),
+                ],
+                motivation: "Without index scans, every query would require a full table scan, \
+                             reading every page even when only a handful of rows match. For a \
+                             table with millions of rows, finding a single row by ID would mean \
+                             reading the entire table — an O(n) operation that could take seconds \
+                             or minutes.\n\n\
+                             Index scans turn selective lookups into O(log n) or O(1) operations \
+                             by using a prebuilt data structure to jump directly to the matching \
+                             rows. They are the reason database queries can return results in \
+                             milliseconds even on tables with billions of rows."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("limit".into(), "Maximum number of records to return, simulating a SQL LIMIT \
+                                      clause. Set to 0 for unlimited. When set, the scan stops \
+                                      early after finding enough matches, which can dramatically \
+                                      reduce the number of page reads. This is especially powerful \
+                                      with sorted indexes: 'SELECT * FROM users ORDER BY created_at \
+                                      DESC LIMIT 10' only needs to read the last 10 index entries. \
+                                      Try setting limit to 1, 10, and 100 to see how it affects \
+                                      pages_read and random_ios.".into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "sequential-scan".into(),
+                        comparison: "A sequential scan reads every page in order — O(n) but with \
+                                     efficient sequential I/O. An index scan reads only matching \
+                                     pages — O(k) but with expensive random I/O. The crossover \
+                                     point is typically 5-15% selectivity: if more than ~10% of \
+                                     rows match, the sequential scan's efficient I/O pattern often \
+                                     wins. Databases choose automatically based on cost estimation.".into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "Why does MySQL InnoDB require a 'double lookup' for secondary index scans, \
+                     and how do covering indexes avoid this?".into(),
+                    "What is the difference between an Index Scan and an Index Only Scan in \
+                     PostgreSQL, and when can the planner use each?".into(),
+                    "How does the correlation between index order and physical row order affect \
+                     index scan performance?".into(),
                 ],
             },
             references: vec![Reference {

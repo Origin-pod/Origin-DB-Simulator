@@ -22,6 +22,7 @@ import { ChallengeModal } from '@/components/challenges/ChallengeModal';
 import { ChallengeRunner } from '@/components/challenges/ChallengeRunner';
 import { ArchitectureModal } from '@/components/architectures/ArchitectureModal';
 import { ArchitectureAnnotations } from '@/components/architectures/ArchitectureAnnotations';
+import { NodeWikiPanel } from '@/components/wiki/NodeWikiPanel';
 
 function App() {
   const [comparisonOpen, setComparisonOpen] = useState(false);
@@ -74,6 +75,7 @@ function App() {
       <ChallengeRunner />
       <ArchitectureModal />
       <ArchitectureAnnotations />
+      <NodeWikiPanel />
       <ToastContainer />
     </ReactFlowProvider>
   );

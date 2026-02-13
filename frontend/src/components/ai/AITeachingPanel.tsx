@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/Button';
 import { useAIStore } from '@/stores/aiStore';
 import { useExecutionStore } from '@/stores/executionStore';
+import { MarkdownLite } from '@/lib/markdown';
 
 export function AITeachingPanel() {
   const {
@@ -264,77 +265,3 @@ function MessageBubble({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Minimal markdown renderer (bold, code, paragraphs)
-// ---------------------------------------------------------------------------
-
-function MarkdownLite({ text }: { text: string }) {
-  const paragraphs = text.split(/\n\n+/);
-
-  return (
-    <>
-      {paragraphs.map((para, i) => {
-        // Code block
-        if (para.startsWith('```')) {
-          const code = para.replace(/^```\w*\n?/, '').replace(/```$/, '');
-          return (
-            <pre
-              key={i}
-              className="bg-gray-200 text-gray-800 rounded px-2 py-1.5 text-xs font-mono overflow-x-auto my-1.5"
-            >
-              {code}
-            </pre>
-          );
-        }
-
-        // Regular paragraph with inline formatting
-        return (
-          <p key={i} className={i > 0 ? 'mt-2' : ''}>
-            {formatInline(para)}
-          </p>
-        );
-      })}
-    </>
-  );
-}
-
-function formatInline(text: string): React.ReactNode[] {
-  // Split on bold (**text**) and inline code (`text`)
-  const parts: React.ReactNode[] = [];
-  const regex = /(\*\*[^*]+\*\*|`[^`]+`)/g;
-  let lastIdx = 0;
-
-  text.replace(regex, (match, _p1, offset) => {
-    // Text before match
-    if (offset > lastIdx) {
-      parts.push(text.slice(lastIdx, offset));
-    }
-
-    if (match.startsWith('**')) {
-      parts.push(
-        <strong key={offset} className="font-semibold">
-          {match.slice(2, -2)}
-        </strong>,
-      );
-    } else if (match.startsWith('`')) {
-      parts.push(
-        <code
-          key={offset}
-          className="bg-gray-200 text-gray-800 px-1 py-0.5 rounded text-[11px] font-mono"
-        >
-          {match.slice(1, -1)}
-        </code>,
-      );
-    }
-
-    lastIdx = offset + match.length;
-    return match;
-  });
-
-  // Remaining text
-  if (lastIdx < text.length) {
-    parts.push(text.slice(lastIdx));
-  }
-
-  return parts;
-}

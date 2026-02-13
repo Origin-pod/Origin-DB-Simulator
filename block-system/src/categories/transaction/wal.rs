@@ -38,7 +38,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee, GuaranteeType};
@@ -131,15 +131,38 @@ impl WALBlock {
             description: "Append-only log for crash recovery and transaction durability".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A Write-Ahead Log (WAL) ensures transaction durability by recording \
-                           every modification before it is applied to the actual data. After a \
-                           crash, the database replays the log to recover committed transactions \
-                           and undo uncommitted ones."
+                overview: "A Write-Ahead Log (WAL) ensures transaction durability by recording every \
+                           modification to an append-only log before the actual data pages are changed. \
+                           This is the foundational technique for crash recovery in every serious database \
+                           system. The core rule is simple: the log record must hit stable storage before \
+                           the corresponding data modification.\n\n\
+                           After a crash, the database reads the WAL from the last checkpoint and replays \
+                           it: committed transactions are redone (their changes are applied to data pages), \
+                           and uncommitted transactions are undone (their partial changes are rolled back). \
+                           This is the essence of the ARIES recovery protocol used by most databases.\n\n\
+                           Think of WAL like a flight recorder (black box) on an airplane. Everything that \
+                           happens is recorded sequentially to a durable log. If something goes wrong, you \
+                           can reconstruct exactly what happened by replaying the log. The checkpoint is \
+                           like a snapshot — it lets you start the replay from a recent point rather than \
+                           from the very beginning."
                     .into(),
-                algorithm: "Write: append log record with LSN, fsync. Checkpoint: flush dirty \
-                            pages, write checkpoint record, advance the recovery starting point. \
-                            Recovery: scan log from last checkpoint, redo committed txns, undo \
-                            uncommitted ones (ARIES protocol)."
+                algorithm: "APPEND(record_type, data):\n  \
+                           1. Assign next LSN (Log Sequence Number) — monotonically increasing\n  \
+                           2. Create log record: { lsn, type, data, checksum }\n  \
+                           3. Write to WAL buffer\n  \
+                           4. If entries_since_fsync >= fsync_interval:\n     \
+                              fsync() — force WAL buffer to stable storage\n  \
+                           5. If entries_since_checkpoint >= checkpoint_interval:\n     \
+                              CHECKPOINT()\n\n\
+                           CHECKPOINT():\n  \
+                           1. Write checkpoint log record with current LSN\n  \
+                           2. Flush all dirty data pages to disk\n  \
+                           3. Record checkpoint LSN as new recovery starting point\n  \
+                           4. Old log entries before checkpoint can be recycled\n\n\
+                           RECOVERY (after crash):\n  \
+                           1. Find last checkpoint LSN\n  \
+                           2. REDO pass: scan forward from checkpoint, replay all changes\n  \
+                           3. UNDO pass: scan backward, roll back uncommitted transactions"
                     .into(),
                 complexity: Complexity {
                     time: "O(1) per log append (sequential write), O(n) for recovery replay"
@@ -150,17 +173,75 @@ impl WALBlock {
                     "Crash recovery (every modern RDBMS uses WAL)".into(),
                     "Replication (ship log to replicas)".into(),
                     "Point-in-time recovery (replay log to target timestamp)".into(),
+                    "Change data capture — stream database changes to downstream systems".into(),
+                    "Audit logging — immutable record of all database modifications".into(),
                 ],
                 tradeoffs: vec![
                     "Sequential writes are fast but log grows continuously".into(),
                     "Frequent fsyncs ensure durability but add latency".into(),
                     "Checkpoints reduce recovery time but pause normal operations briefly".into(),
                     "Group commit amortizes fsync cost across multiple transactions".into(),
+                    "WAL doubles write I/O (write log + write data), but sequential log writes are much faster than random data writes".into(),
+                    "Larger fsync intervals risk losing more transactions on crash but improve throughput".into(),
                 ],
                 examples: vec![
-                    "PostgreSQL WAL (pg_wal directory)".into(),
-                    "MySQL InnoDB redo log".into(),
-                    "SQLite WAL mode".into(),
+                    "PostgreSQL WAL (pg_wal directory) — 16MB segment files, archived for point-in-time recovery".into(),
+                    "MySQL InnoDB redo log — circular buffer of fixed-size log files".into(),
+                    "SQLite WAL mode — allows concurrent readers during writes via WAL file".into(),
+                    "RocksDB WAL — write-ahead log for LSM-tree memtable durability".into(),
+                ],
+                motivation: "Without a write-ahead log, a database that crashes mid-transaction would leave \
+                             data in an inconsistent state. Imagine a bank transfer that debits one account \
+                             but crashes before crediting the other — without WAL, that money simply disappears. \
+                             The data file has a partial update with no way to know what happened.\n\n\
+                             WAL solves this by ensuring that the complete description of every change is \
+                             durably stored before any data is modified. After a crash, the database can \
+                             always reconstruct a consistent state by replaying the log. This is the 'D' \
+                             (Durability) in ACID — the guarantee that committed transactions are permanent."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("fsync_interval".into(),
+                     "Controls how often the WAL is flushed to stable storage (fsync). A value of 1 means \
+                      every single log entry is immediately flushed — maximum durability but highest latency. \
+                      Higher values (5-100) batch multiple log entries before flushing, which dramatically \
+                      improves throughput via group commit but risks losing the last few transactions on crash. \
+                      PostgreSQL's synchronous_commit=off is similar to a high fsync interval. \
+                      Recommended: 1 for financial/critical data, 5-10 for general OLTP, 50-100 for \
+                      batch ingestion where some data loss is acceptable."
+                        .into()),
+                    ("checkpoint_interval".into(),
+                     "Controls how often checkpoints occur, measured in log entries between checkpoints. \
+                      Lower values (10-50) mean faster crash recovery (less log to replay) but more frequent \
+                      I/O pauses as dirty pages are flushed. Higher values (1000-100000) reduce checkpoint \
+                      overhead during normal operations but increase recovery time after a crash. PostgreSQL's \
+                      checkpoint_timeout (default 5 minutes) and max_wal_size serve a similar purpose. \
+                      Recommended: 100 for most workloads, higher for write-heavy systems with tolerance \
+                      for longer recovery times."
+                        .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "redo-log".into(),
+                        comparison: "A redo log records only the 'after' state of each change and is used \
+                                     to replay committed transactions after a crash. WAL in the ARIES model \
+                                     records both redo and undo information, supporting both replaying committed \
+                                     and rolling back uncommitted transactions. MySQL InnoDB uses a separate \
+                                     redo log and undo log, while PostgreSQL combines both in its WAL."
+                            .into(),
+                    },
+                    Alternative {
+                        block_type: "undo-log".into(),
+                        comparison: "An undo log records the 'before' state of each change, allowing \
+                                     uncommitted transactions to be rolled back. WAL combines redo and \
+                                     undo capabilities. Some systems (like MySQL InnoDB) maintain a separate \
+                                     undo log that also serves MVCC version storage."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "What is the ARIES recovery protocol, and how do its three passes (analysis, redo, undo) work?".into(),
+                    "How does group commit improve WAL throughput, and what is the trade-off?".into(),
+                    "Why are sequential writes (WAL) so much faster than random writes (data pages) on disk?".into(),
                 ],
             },
             references: vec![Reference {

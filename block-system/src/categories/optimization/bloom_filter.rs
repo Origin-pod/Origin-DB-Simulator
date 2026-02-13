@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::core::block::{
-    Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
+    Alternative, Block, BlockCategory, BlockDocumentation, BlockError, BlockMetadata, BlockState,
     Complexity, ExecutionContext, ExecutionResult, Reference, ReferenceType,
 };
 use crate::core::constraint::{Constraint, Guarantee};
@@ -91,16 +91,35 @@ impl BloomFilterBlock {
             description: "Probabilistic filter that prevents unnecessary disk reads".into(),
             version: "1.0.0".into(),
             documentation: BlockDocumentation {
-                overview: "A Bloom filter is a space-efficient probabilistic data structure that \
-                           tests whether an element is a member of a set. False positives are \
-                           possible, but false negatives are not — if the filter says 'no', the \
-                           element is definitely absent. This makes it perfect for avoiding \
-                           unnecessary I/O in storage engines."
+                overview: "A Bloom filter is a space-efficient probabilistic data structure that tests whether \
+                           an element is a member of a set. It can tell you with certainty that an element is \
+                           NOT in the set, but can only say that an element is PROBABLY in the set. False positives \
+                           are possible, but false negatives are not.\n\n\
+                           In database systems, Bloom filters are used as a first-pass check before expensive \
+                           disk I/O. When a query looks up a key, the Bloom filter is checked first. If the \
+                           filter says 'no', the database skips the disk read entirely — a huge performance win. \
+                           If the filter says 'maybe yes', the database proceeds with the actual read, which \
+                           might turn out to be a false positive (the key is not actually there).\n\n\
+                           Think of a Bloom filter like a bouncer at a club with a guest list. The bouncer can \
+                           instantly tell you 'you are definitely NOT on the list' (true negative). But sometimes \
+                           the bouncer says 'you might be on the list, go check inside' — and when you get \
+                           inside, it turns out you were not actually on the list (false positive). The bouncer \
+                           never wrongly turns away someone who IS on the list (no false negatives)."
                     .into(),
-                algorithm: "Insert: hash the key with k hash functions, set bits at those \
-                            positions. Query: hash the key, check all k bits — if any is 0, \
-                            the key is absent. If all are 1, the key is probably present \
-                            (may be a false positive)."
+                algorithm: "INSERT(key):\n  \
+                           For i in 0..k (each hash function):\n    \
+                             index = hash_i(key) % num_bits\n    \
+                             bits[index] = 1\n\n\
+                           QUERY(key):\n  \
+                           For i in 0..k:\n    \
+                             index = hash_i(key) % num_bits\n    \
+                             If bits[index] == 0:\n      \
+                               Return DEFINITELY_NOT_PRESENT\n  \
+                           Return POSSIBLY_PRESENT\n\n\
+                           FALSE_POSITIVE_RATE:\n  \
+                           Theoretical: (1 - e^(-kn/m))^k\n  \
+                           Where n=items inserted, m=total bits, k=hash functions\n  \
+                           Optimal k = (m/n) * ln(2) ≈ 0.693 * (m/n)"
                     .into(),
                 complexity: Complexity {
                     time: "O(k) per insert and query, where k is the number of hash functions"
@@ -112,18 +131,68 @@ impl BloomFilterBlock {
                     "LSM-tree databases skip SSTables that don't contain the key".into(),
                     "Cassandra checks Bloom filters before reading from disk".into(),
                     "RocksDB uses per-SSTable Bloom filters to reduce read amplification".into(),
+                    "Network routers use Bloom filters for packet filtering and deduplication".into(),
+                    "Distributed caches use Bloom filters to avoid network round-trips for missing keys".into(),
                 ],
                 tradeoffs: vec![
                     "More bits = lower false positive rate but more memory".into(),
                     "More hash functions = lower false positives up to a point, then diminishing returns".into(),
                     "Cannot delete elements (use Counting Bloom filter for that)".into(),
                     "Optimal k = (m/n) · ln(2) ≈ 0.693 · (m/n)".into(),
+                    "Filter must be rebuilt if the underlying data changes (no incremental delete)".into(),
+                    "At high fill ratios (>50% bits set), false positive rate degrades rapidly".into(),
                 ],
                 examples: vec![
-                    "Cassandra uses Bloom filters per-SSTable".into(),
-                    "RocksDB configures bits_per_key (default 10)".into(),
-                    "LevelDB uses Bloom filters to skip levels during reads".into(),
-                    "Chrome used Bloom filters for safe browsing URL checking".into(),
+                    "Cassandra — per-SSTable Bloom filter configured via bloom_filter_fp_chance (default 0.01)".into(),
+                    "RocksDB — configurable bits_per_key (default 10), full and partitioned filters".into(),
+                    "LevelDB — uses Bloom filters to skip levels during point lookups".into(),
+                    "Chrome — used Bloom filters for safe browsing URL checking before switching to prefix sets".into(),
+                    "HBase — per-StoreFile Bloom filter to skip unnecessary block reads".into(),
+                ],
+                motivation: "Without a Bloom filter, a point lookup in an LSM-tree database might need to check \
+                             every SSTable on disk to determine if a key exists. With thousands of SSTables, \
+                             this means thousands of disk reads for a single query — each taking milliseconds. \
+                             A Bloom filter for each SSTable allows the database to skip the vast majority of \
+                             these disk reads with a single in-memory bit check.\n\n\
+                             The impact is dramatic: RocksDB with 10 bits per key achieves roughly a 1% false \
+                             positive rate, meaning 99% of unnecessary disk reads are eliminated. For a read-heavy \
+                             workload with many non-existent keys, this can improve query latency by 10-100x."
+                    .into(),
+                parameter_guide: HashMap::from([
+                    ("num_bits".into(),
+                     "The total number of bits in the Bloom filter's bit array. More bits means lower false \
+                      positive rates but higher memory usage. The relationship is: for n items with target \
+                      false positive rate p, you need m = -n*ln(p)/(ln2)^2 bits. For example, 1000 items \
+                      at 1% FP rate needs ~9585 bits (~1.2 KB). At 10 bits per item, expect ~1% FP rate. \
+                      At 5 bits per item, expect ~5% FP rate. Recommended: 10,000-100,000 for typical \
+                      SSTable sizes, scaling with the number of keys per SSTable."
+                        .into()),
+                    ("num_hash_functions".into(),
+                     "The number of independent hash functions used to set and check bits. The optimal \
+                      number is k = (m/n) * ln(2), where m is bits and n is items. Too few hash functions \
+                      means higher false positive rates. Too many means the bit array fills up faster, also \
+                      increasing false positives. For 10 bits per key, the optimal k is about 7. For 5 bits \
+                      per key, optimal k is about 3-4. Recommended: 7 for the default 10,000 bits with \
+                      ~1000 items; adjust based on your bits-per-key ratio."
+                        .into()),
+                ]),
+                alternatives: vec![
+                    Alternative {
+                        block_type: "statistics-collector".into(),
+                        comparison: "Bloom filters and statistics collectors serve different optimization \
+                                     purposes. Bloom filters answer 'is this specific key present?' with a \
+                                     quick probabilistic check, avoiding unnecessary I/O for point lookups. \
+                                     Statistics collectors gather distribution data (cardinality, histograms) \
+                                     to help the query planner choose efficient execution strategies. Use Bloom \
+                                     filters for point lookup optimization in LSM-trees; use statistics for \
+                                     query planning and join order selection."
+                            .into(),
+                    },
+                ],
+                suggested_questions: vec![
+                    "How do I calculate the optimal number of bits and hash functions for a target false positive rate?".into(),
+                    "What is a Counting Bloom filter, and how does it support deletions?".into(),
+                    "Why do LSM-tree databases need Bloom filters but B-tree databases generally do not?".into(),
                 ],
             },
             references: vec![

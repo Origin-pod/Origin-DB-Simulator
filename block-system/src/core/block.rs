@@ -131,6 +131,23 @@ pub struct BlockDocumentation {
     pub tradeoffs: Vec<String>,
     /// Usage examples
     pub examples: Vec<String>,
+    /// Why this component exists — what problem it solves
+    pub motivation: String,
+    /// Deep explanation per parameter (param_id → guide text)
+    pub parameter_guide: HashMap<String, String>,
+    /// Comparisons with alternative/sibling block types
+    pub alternatives: Vec<Alternative>,
+    /// Suggested AI chat starter questions
+    pub suggested_questions: Vec<String>,
+}
+
+/// A comparison with an alternative block type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Alternative {
+    /// The block_type identifier of the alternative (e.g., "hash_index")
+    pub block_type: String,
+    /// Comparison text explaining when to choose one vs the other
+    pub comparison: String,
 }
 
 /// Complexity analysis
