@@ -116,6 +116,15 @@ test_data/
 # Node modules (if using any JS tooling)
 node_modules/
 
+# Generated WASM files copied for production builds
+frontend/public/pkg/
+
+# Proptest regression files (auto-generated)
+**/proptest-regressions/
+
+# Vite build output
+frontend/dist/
+
 # Python (if using any Python tooling)
 __pycache__/
 *.py[cod]

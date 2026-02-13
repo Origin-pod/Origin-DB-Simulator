@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "copy-wasm": "mkdir -p public/pkg && cp src/pkg/block_system.js src/pkg/block_system_bg.wasm public/pkg/ 2>/dev/null || true",
+    "build": "npm run copy-wasm && tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
