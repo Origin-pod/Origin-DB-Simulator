@@ -20,6 +20,16 @@ import { getWASMBridge } from '@/wasm/bridge';
 import type { BlockConfig, WorkloadConfig } from '@/wasm/types';
 
 // ---------------------------------------------------------------------------
+// Frontend-only block types with no Rust/WASM implementation.
+// These are silently skipped during WASM registration and execution.
+// ---------------------------------------------------------------------------
+
+const FRONTEND_ONLY_BLOCKS = new Set([
+  'schema_definition',
+  'clock_buffer',
+]);
+
+// ---------------------------------------------------------------------------
 // WASMExecutionEngine
 // ---------------------------------------------------------------------------
 
@@ -39,9 +49,14 @@ export class WASMExecutionEngine implements ExecutionEngine {
     // Initialize a fresh runtime
     bridge.initRuntime();
 
-    // Register all blocks
+    // Register all blocks (skip frontend-only types)
+    const skippedNodeIds = new Set<string>();
     for (const node of nodes) {
       const data = node.data as BlockNodeData;
+      if (FRONTEND_ONLY_BLOCKS.has(data.blockType)) {
+        skippedNodeIds.add(node.id);
+        continue;
+      }
       const config: BlockConfig = {
         type: data.blockType,
         id: node.id,
@@ -50,9 +65,11 @@ export class WASMExecutionEngine implements ExecutionEngine {
       bridge.registerBlock(config);
     }
 
-    // Create connections
+    // Create connections (skip edges involving frontend-only blocks)
     for (const edge of edges) {
-      if (edge.sourceHandle && edge.targetHandle) {
+      if (edge.sourceHandle && edge.targetHandle
+          && !skippedNodeIds.has(edge.source)
+          && !skippedNodeIds.has(edge.target)) {
         bridge.createConnection(
           { blockId: edge.source, portName: edge.sourceHandle },
           { blockId: edge.target, portName: edge.targetHandle },
