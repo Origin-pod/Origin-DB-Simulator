@@ -214,6 +214,205 @@ struct BlockTypeInfo {
     description: String,
 }
 
+// ── Block detail response types (full educational metadata) ─────────────────
+
+#[derive(Serialize)]
+struct BlockDetailResponse {
+    #[serde(rename = "blockType")]
+    block_type: String,
+    name: String,
+    category: String,
+    description: String,
+    version: String,
+    documentation: BlockDocResponse,
+    references: Vec<ReferenceResponse>,
+    parameters: Vec<ParameterResponse>,
+    metrics: Vec<MetricResponse>,
+    inputs: Vec<PortResponse>,
+    outputs: Vec<PortResponse>,
+    icon: String,
+    color: String,
+}
+
+#[derive(Serialize)]
+struct BlockDocResponse {
+    overview: String,
+    algorithm: String,
+    complexity: ComplexityResponse,
+    #[serde(rename = "use_cases")]
+    use_cases: Vec<String>,
+    tradeoffs: Vec<String>,
+    examples: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ComplexityResponse {
+    time: String,
+    space: String,
+}
+
+#[derive(Serialize)]
+struct ReferenceResponse {
+    #[serde(rename = "refType")]
+    ref_type: String,
+    title: String,
+    url: Option<String>,
+    citation: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ParameterResponse {
+    id: String,
+    name: String,
+    #[serde(rename = "paramType")]
+    param_type: String,
+    description: String,
+    #[serde(rename = "defaultValue")]
+    default_value: serde_json::Value,
+    required: bool,
+    constraints: Option<ConstraintsResponse>,
+    #[serde(rename = "uiHint")]
+    ui_hint: Option<UIHintResponse>,
+}
+
+#[derive(Serialize)]
+struct ConstraintsResponse {
+    min: Option<f64>,
+    max: Option<f64>,
+    pattern: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UIHintResponse {
+    widget: String,
+    step: Option<f64>,
+    unit: Option<String>,
+    #[serde(rename = "helpText")]
+    help_text: Option<String>,
+}
+
+#[derive(Serialize)]
+struct MetricResponse {
+    id: String,
+    name: String,
+    #[serde(rename = "metricType")]
+    metric_type: String,
+    unit: String,
+    description: String,
+}
+
+#[derive(Serialize)]
+struct PortResponse {
+    id: String,
+    name: String,
+    #[serde(rename = "portType")]
+    port_type: String,
+    direction: String,
+    required: bool,
+    description: String,
+}
+
+fn build_block_detail(block_type_str: &str) -> Result<BlockDetailResponse, String> {
+    let block = create_block(block_type_str)?;
+    let meta = block.metadata();
+    let doc = &meta.documentation;
+
+    let documentation = BlockDocResponse {
+        overview: doc.overview.clone(),
+        algorithm: doc.algorithm.clone(),
+        complexity: ComplexityResponse {
+            time: doc.complexity.time.clone(),
+            space: doc.complexity.space.clone(),
+        },
+        use_cases: doc.use_cases.clone(),
+        tradeoffs: doc.tradeoffs.clone(),
+        examples: doc.examples.clone(),
+    };
+
+    let references = meta.references.iter().map(|r| {
+        ReferenceResponse {
+            ref_type: format!("{:?}", r.ref_type),
+            title: r.title.clone(),
+            url: r.url.clone(),
+            citation: r.citation.clone(),
+        }
+    }).collect();
+
+    let parameters = block.parameters().iter().map(|p| {
+        let default_value = match &p.default_value {
+            ParameterValue::String(s) => serde_json::Value::String(s.clone()),
+            ParameterValue::Number(n) => serde_json::json!(*n),
+            ParameterValue::Integer(i) => serde_json::json!(*i),
+            ParameterValue::Boolean(b) => serde_json::json!(*b),
+            ParameterValue::Null => serde_json::Value::Null,
+            _ => serde_json::Value::Null,
+        };
+        let constraints = p.constraints.as_ref().map(|c| ConstraintsResponse {
+            min: c.min,
+            max: c.max,
+            pattern: c.pattern.clone(),
+        });
+        let ui_hint = p.ui_hint.as_ref().map(|h| UIHintResponse {
+            widget: format!("{:?}", h.widget),
+            step: h.step,
+            unit: h.unit.clone(),
+            help_text: h.help_text.clone(),
+        });
+        ParameterResponse {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            param_type: format!("{:?}", p.param_type),
+            description: p.description.clone(),
+            default_value,
+            required: p.required,
+            constraints,
+            ui_hint,
+        }
+    }).collect();
+
+    let metrics = block.metrics().iter().map(|m| MetricResponse {
+        id: m.id.clone(),
+        name: m.name.clone(),
+        metric_type: format!("{:?}", m.metric_type),
+        unit: m.unit.clone(),
+        description: m.description.clone(),
+    }).collect();
+
+    let inputs = block.inputs().iter().map(|p| PortResponse {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        port_type: format!("{:?}", p.port_type),
+        direction: format!("{:?}", p.direction),
+        required: p.required,
+        description: p.description.clone(),
+    }).collect();
+
+    let outputs = block.outputs().iter().map(|p| PortResponse {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        port_type: format!("{:?}", p.port_type),
+        direction: format!("{:?}", p.direction),
+        required: p.required,
+        description: p.description.clone(),
+    }).collect();
+
+    Ok(BlockDetailResponse {
+        block_type: block_type_str.to_string(),
+        name: meta.name.clone(),
+        category: format!("{:?}", meta.category),
+        description: meta.description.clone(),
+        version: meta.version.clone(),
+        documentation,
+        references,
+        parameters,
+        metrics,
+        inputs,
+        outputs,
+        icon: meta.icon.clone(),
+        color: meta.color.clone(),
+    })
+}
+
 // ── Block factory ───────────────────────────────────────────────────────────
 
 fn create_block(block_type: &str) -> Result<Box<dyn Block>, String> {
@@ -597,6 +796,29 @@ pub fn get_block_types() -> String {
     ];
 
     serde_json::to_string(&types).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn get_block_detail(block_type: &str) -> String {
+    match build_block_detail(block_type) {
+        Ok(detail) => serde_json::to_string(&detail).unwrap_or_default(),
+        Err(e) => json_err(e),
+    }
+}
+
+#[wasm_bindgen]
+pub fn get_all_block_details() -> String {
+    let type_strings = [
+        "heap_storage", "lsm_tree", "clustered_storage", "columnar_storage",
+        "btree_index", "hash_index", "covering_index", "lru_buffer",
+        "sequential_scan", "index_scan", "filter", "sort", "hash_join",
+        "row_lock", "mvcc", "wal",
+    ];
+    let details: Vec<BlockDetailResponse> = type_strings
+        .iter()
+        .filter_map(|t| build_block_detail(t).ok())
+        .collect();
+    serde_json::to_string(&details).unwrap_or_default()
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────

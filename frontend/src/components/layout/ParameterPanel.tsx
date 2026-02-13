@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { X, Settings, Trash2, Info, HelpCircle, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { BlockEducationPanel } from '@/components/education/BlockEducationPanel';
 import { useCanvasStore } from '@/stores/canvasStore';
 import {
   CATEGORY_COLORS,
@@ -551,13 +552,10 @@ export function ParameterPanel() {
           )}
         </div>
 
-        {/* Documentation Section */}
-        {blockDef?.documentation && (
+        {/* Education / Documentation Section */}
+        {blockDef && (
           <div className="p-4 border-t border-gray-100">
-            <h4 className="text-sm font-medium text-gray-900 mb-2">Documentation</h4>
-            <p className="text-xs text-gray-600 leading-relaxed">
-              {blockDef.documentation.details || blockDef.documentation.summary}
-            </p>
+            <BlockEducationPanel block={blockDef} compact />
           </div>
         )}
       </div>

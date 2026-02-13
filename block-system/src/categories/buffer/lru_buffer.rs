@@ -50,7 +50,7 @@ pub struct LRUBufferBlock {
     metric_defs: Vec<MetricDefinition>,
 
     // Configuration
-    capacity: usize, // max pages
+    pub(crate) capacity: usize, // max pages
     page_size: usize,
 
     // Internal state

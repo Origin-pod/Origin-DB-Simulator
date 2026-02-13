@@ -13,3 +13,5 @@ mod parameter_tests;
 mod example_blocks;
 #[cfg(test)]
 mod integration;
+#[cfg(test)]
+mod property_tests;

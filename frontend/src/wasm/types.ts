@@ -180,6 +180,76 @@ export interface RustBlockMetadata {
   color: string;
 }
 
+// ---------------------------------------------------------------------------
+// Reference types  (mirrors block-system/src/core/block.rs Reference)
+// ---------------------------------------------------------------------------
+
+export type ReferenceType = 'Paper' | 'Book' | 'Blog' | 'Implementation';
+
+export interface Reference {
+  refType: ReferenceType;
+  title: string;
+  url: string | null;
+  citation: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Full block detail  (returned by get_block_detail / get_all_block_details)
+// ---------------------------------------------------------------------------
+
+export interface WASMBlockDetail {
+  blockType: string;
+  name: string;
+  category: string;
+  description: string;
+  version: string;
+  documentation: BlockDocumentation;
+  references: Reference[];
+  parameters: WASMParameterDetail[];
+  metrics: WASMMetricDetail[];
+  inputs: WASMPortDetail[];
+  outputs: WASMPortDetail[];
+  icon: string;
+  color: string;
+}
+
+export interface WASMParameterDetail {
+  id: string;
+  name: string;
+  paramType: string;
+  description: string;
+  defaultValue: unknown;
+  required: boolean;
+  constraints?: {
+    min?: number;
+    max?: number;
+    pattern?: string;
+  };
+  uiHint?: {
+    widget: string;
+    step?: number;
+    unit?: string;
+    helpText?: string;
+  };
+}
+
+export interface WASMMetricDetail {
+  id: string;
+  name: string;
+  metricType: string;
+  unit: string;
+  description: string;
+}
+
+export interface WASMPortDetail {
+  id: string;
+  name: string;
+  portType: string;
+  direction: string;
+  required: boolean;
+  description: string;
+}
+
 export type BlockError =
   | { InitializationError: string }
   | { ExecutionError: string }

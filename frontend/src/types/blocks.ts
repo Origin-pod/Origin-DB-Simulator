@@ -13,6 +13,8 @@ export interface BlockDefinition {
   outputs: PortDefinition[];
   parameters: ParameterDefinition[];
   documentation?: BlockDocumentation;
+  references?: BlockReference[];
+  metricDefinitions?: BlockMetricInfo[];
 }
 
 export interface BlockDocumentation {
@@ -20,6 +22,27 @@ export interface BlockDocumentation {
   details?: string;
   examples?: string[];
   seeAlso?: string[];
+  // Rich fields populated from WASM block metadata
+  overview?: string;
+  algorithm?: string;
+  complexity?: { time: string; space: string };
+  useCases?: string[];
+  tradeoffs?: string[];
+}
+
+export interface BlockReference {
+  refType: 'Paper' | 'Book' | 'Blog' | 'Implementation';
+  title: string;
+  url?: string;
+  citation?: string;
+}
+
+export interface BlockMetricInfo {
+  id: string;
+  name: string;
+  type: string;
+  unit: string;
+  description: string;
 }
 
 /**
@@ -241,6 +264,44 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     documentation: {
       summary: 'Storage with records physically sorted by cluster key',
       details: 'Clustered storage keeps records in sorted order, which improves range query performance but may slow down inserts.',
+    },
+  },
+  {
+    type: 'columnar_storage',
+    name: 'Columnar Storage',
+    description: 'Column-oriented storage for analytical workloads',
+    category: 'storage',
+    icon: 'Grid3x3',
+    inputs: [
+      {
+        name: 'records',
+        type: 'input',
+        dataType: 'DataStream',
+        description: 'Records to store in columnar format',
+        required: true,
+      },
+    ],
+    outputs: [
+      {
+        name: 'stored',
+        type: 'output',
+        dataType: 'DataStream',
+        description: 'Access to stored columns',
+        required: false,
+      },
+    ],
+    parameters: [
+      {
+        name: 'projection',
+        type: 'string',
+        default: '',
+        description: 'Comma-separated columns to read (empty = all)',
+        uiHint: 'input',
+      },
+    ],
+    documentation: {
+      summary: 'Column-oriented storage for analytical workloads',
+      details: 'Stores data in column-major format — each column is a contiguous array. Ideal for OLAP queries that scan many rows but only a few columns, with excellent compression ratios from low-cardinality data.',
     },
   },
   {
@@ -920,9 +981,17 @@ export function getActiveCategories(): CategoryInfo[] {
  */
 export function searchBlocks(query: string): BlockDefinition[] {
   const lowerQuery = query.toLowerCase();
-  return BLOCK_REGISTRY.filter(
-    (block) =>
-      block.name.toLowerCase().includes(lowerQuery) ||
-      block.description.toLowerCase().includes(lowerQuery)
-  );
+  return BLOCK_REGISTRY.filter((block) => {
+    if (block.name.toLowerCase().includes(lowerQuery)) return true;
+    if (block.description.toLowerCase().includes(lowerQuery)) return true;
+    const doc = block.documentation;
+    if (doc?.overview?.toLowerCase().includes(lowerQuery)) return true;
+    if (doc?.algorithm?.toLowerCase().includes(lowerQuery)) return true;
+    if (doc?.useCases?.some((uc) => uc.toLowerCase().includes(lowerQuery))) return true;
+    if (doc?.tradeoffs?.some((t) => t.toLowerCase().includes(lowerQuery))) return true;
+    if (doc?.examples?.some((ex) => ex.toLowerCase().includes(lowerQuery))) return true;
+    if (block.references?.some((r) => r.title.toLowerCase().includes(lowerQuery))) return true;
+    if (block.references?.some((r) => r.citation?.toLowerCase().includes(lowerQuery))) return true;
+    return false;
+  });
 }

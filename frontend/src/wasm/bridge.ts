@@ -13,6 +13,7 @@ import type {
   WASMProgressReport,
   WASMMetricsResult,
   RustConnection,
+  WASMBlockDetail,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -150,6 +151,20 @@ export class WASMBridge {
     const wasm = this.getModule();
     const json = wasm.get_block_types();
     return JSON.parse(json);
+  }
+
+  getBlockDetail(blockType: string): WASMBlockDetail | null {
+    const wasm = this.getModule();
+    const json = wasm.get_block_detail(blockType);
+    const result = JSON.parse(json);
+    if (result.error) return null;
+    return result as WASMBlockDetail;
+  }
+
+  getAllBlockDetails(): WASMBlockDetail[] {
+    const wasm = this.getModule();
+    const json = wasm.get_all_block_details();
+    return JSON.parse(json) as WASMBlockDetail[];
   }
 
   // -------------------------------------------------------------------

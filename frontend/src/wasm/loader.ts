@@ -39,6 +39,8 @@ export interface WASMModule {
 
   // Discovery
   get_block_types: () => string; // returns BlockMetadata[] JSON
+  get_block_detail: (blockType: string) => string; // returns full block metadata JSON
+  get_all_block_details: () => string; // returns all block details JSON
 }
 
 // ---------------------------------------------------------------------------

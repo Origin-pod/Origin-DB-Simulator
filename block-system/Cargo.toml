@@ -33,6 +33,10 @@ proptest = "1.0"
 tempfile = "3.0"
 tokio = { version = "1", features = ["full"] }
 
+[[bench]]
+name = "block_benchmarks"
+harness = false
+
 [profile.release]
 opt-level = "s"
 lto = true

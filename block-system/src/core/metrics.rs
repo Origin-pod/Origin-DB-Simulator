@@ -230,9 +230,8 @@ impl Default for MetricsCollector {
 
 impl Clone for MetricsCollector {
     fn clone(&self) -> Self {
-        let metrics = self.metrics.lock().unwrap();
         Self {
-            metrics: Arc::new(Mutex::new(metrics.clone())),
+            metrics: Arc::clone(&self.metrics),
         }
     }
 }

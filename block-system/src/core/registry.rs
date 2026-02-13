@@ -124,7 +124,7 @@ impl BlockRegistry {
     /// We look for tags like "category:Storage", "category:Index", etc.
     pub fn get_blocks_by_category(&self, category: &BlockCategory) -> Vec<Arc<dyn Block>> {
         let blocks = self.blocks.read();
-        let category_str = format!("category:{}", category);
+        let category_str = format!("category:{:?}", category);
 
         blocks
             .values()

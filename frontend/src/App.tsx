@@ -4,6 +4,7 @@ import { TopBar } from '@/components/layout/TopBar';
 import { useDesignStore } from '@/stores/designStore';
 import { useExecutionStore } from '@/stores/executionStore';
 import { loadWASM } from '@/wasm/loader';
+import { hydrateBlockRegistry } from '@/wasm/hydrate';
 import { DesignTabs } from '@/components/layout/DesignTabs';
 import { BlockPalette } from '@/components/layout/BlockPalette';
 import { Canvas } from '@/components/layout/Canvas';
@@ -27,8 +28,11 @@ function App() {
     useDesignStore.getState().hydrate();
 
     // Attempt to load WASM module (non-blocking, falls back to mock)
-    loadWASM().then(() => {
+    loadWASM().then((loaded) => {
       useExecutionStore.getState().refreshEngineType();
+      if (loaded) {
+        hydrateBlockRegistry();
+      }
     });
   }, []);
 
