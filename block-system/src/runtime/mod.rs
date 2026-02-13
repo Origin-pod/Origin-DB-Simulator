@@ -4,6 +4,7 @@
 //! the data flow between blocks in a pipeline.
 
 pub mod engine;
+pub mod timer;
 pub mod validation;
 pub mod workload;
 

@@ -7,13 +7,13 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::core::block::{Block, BlockError, ExecutionContext};
 use crate::core::metrics::{Logger, MetricsCollector, StorageContext};
 use crate::core::parameter::ParameterValue;
 use crate::core::port::{Connection, PortValue};
 
+use super::timer::Timer;
 use super::validation::{GraphValidationResult, GraphValidator};
 
 // ── Result types (mirror frontend) ──────────────────────────────────────────
@@ -179,7 +179,7 @@ impl ExecutionEngine {
         &mut self,
         input_data: HashMap<(String, String), PortValue>,
     ) -> EngineExecutionResult {
-        let pipeline_start = Instant::now();
+        let pipeline_start = Timer::now();
         let mut errors = Vec::new();
         let mut block_metrics = Vec::new();
 
@@ -192,7 +192,7 @@ impl ExecutionEngine {
             let err_msgs: Vec<String> = validation.errors.iter().map(|e| e.message.clone()).collect();
             return EngineExecutionResult {
                 success: false,
-                duration_ms: pipeline_start.elapsed().as_secs_f64() * 1000.0,
+                duration_ms: pipeline_start.elapsed_ms(),
                 metrics: ExecutionMetrics::default(),
                 block_metrics: Vec::new(),
                 errors: err_msgs,
@@ -206,7 +206,7 @@ impl ExecutionEngine {
             None => {
                 return EngineExecutionResult {
                     success: false,
-                    duration_ms: pipeline_start.elapsed().as_secs_f64() * 1000.0,
+                    duration_ms: pipeline_start.elapsed_ms(),
                     metrics: ExecutionMetrics::default(),
                     block_metrics: Vec::new(),
                     errors: vec!["Graph contains a cycle".into()],
@@ -265,13 +265,13 @@ impl ExecutionEngine {
             };
 
             // Execute the block.
-            let block_start = Instant::now();
+            let block_start = Timer::now();
             let block = self.blocks.get_mut(block_id.as_str()).unwrap();
             let block_name = block.metadata().name.clone();
             let block_type = format!("{:?}", block.metadata().category);
 
             let result = block.execute(ctx).await;
-            let block_elapsed_ms = block_start.elapsed().as_secs_f64() * 1000.0;
+            let block_elapsed_ms = block_start.elapsed_ms();
             block_times.push(block_elapsed_ms);
 
             match result {
@@ -322,7 +322,7 @@ impl ExecutionEngine {
         }
 
         // Step 4: Compute aggregate metrics.
-        let total_duration_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
+        let total_duration_ms = pipeline_start.elapsed_ms();
 
         // Compute percentage of total time for each block.
         for bm in &mut block_metrics {
