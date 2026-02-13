@@ -952,6 +952,240 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
       details: 'WAL writes all changes to a log before applying them to data files. This ensures durability and enables crash recovery.',
     },
   },
+
+  // ============== OPTIMIZATION BLOCKS ==============
+  {
+    type: 'bloom_filter',
+    name: 'Bloom Filter',
+    description: 'Probabilistic filter that prevents unnecessary disk reads',
+    category: 'optimization',
+    icon: 'Sparkles',
+    inputs: [
+      {
+        name: 'requests',
+        type: 'input',
+        dataType: 'DataStream',
+        description: 'Lookup requests to check against the filter',
+        required: true,
+      },
+    ],
+    outputs: [
+      {
+        name: 'filtered',
+        type: 'output',
+        dataType: 'DataStream',
+        description: 'Requests marked with bloom filter result',
+        required: false,
+      },
+    ],
+    parameters: [
+      {
+        name: 'num_bits',
+        type: 'number',
+        default: 10000,
+        description: 'Number of bits in the filter (more = fewer false positives)',
+        constraints: { min: 64, max: 1000000, step: 1000 },
+        uiHint: 'slider',
+      },
+      {
+        name: 'num_hash_functions',
+        type: 'number',
+        default: 7,
+        description: 'Number of hash functions (optimal ≈ 0.693 × bits/items)',
+        constraints: { min: 1, max: 20, step: 1 },
+        uiHint: 'slider',
+      },
+    ],
+    documentation: {
+      summary: 'Probabilistic set membership test used by LSM-tree databases',
+      details: 'A Bloom filter tests whether an element is possibly in a set. False positives are possible but false negatives are not. Cassandra, RocksDB, and LevelDB use Bloom filters to skip SSTables that don\'t contain the queried key.',
+    },
+  },
+  {
+    type: 'statistics_collector',
+    name: 'Statistics Collector',
+    description: 'Gathers table/column statistics for query planning',
+    category: 'optimization',
+    icon: 'BarChart3',
+    inputs: [
+      {
+        name: 'records',
+        type: 'input',
+        dataType: 'DataStream',
+        description: 'Table data to analyze',
+        required: true,
+      },
+    ],
+    outputs: [
+      {
+        name: 'statistics',
+        type: 'output',
+        dataType: 'DataStream',
+        description: 'Statistics summary (cardinality, distribution)',
+        required: false,
+      },
+    ],
+    parameters: [
+      {
+        name: 'sample_rate',
+        type: 'number',
+        default: 0.1,
+        description: 'Fraction of rows to sample (0.01 = 1%, 1.0 = all)',
+        constraints: { min: 0.01, max: 1.0, step: 0.01 },
+        uiHint: 'slider',
+      },
+      {
+        name: 'histogram_buckets',
+        type: 'number',
+        default: 100,
+        description: 'Number of equi-depth histogram buckets',
+        constraints: { min: 10, max: 500, step: 10 },
+        uiHint: 'slider',
+      },
+    ],
+    documentation: {
+      summary: 'Collects statistics for cost-based query optimization',
+      details: 'Samples rows to estimate cardinality, value distribution, and NULL ratios. This is what PostgreSQL\'s ANALYZE command does. Query planners use these statistics to choose between sequential scan vs index scan, pick join order, etc.',
+    },
+  },
+
+  // ============== PARTITIONING BLOCKS ==============
+  {
+    type: 'hash_partitioner',
+    name: 'Hash Partitioner',
+    description: 'Distributes records across partitions by hashing a key',
+    category: 'partitioning',
+    icon: 'Grid3x3',
+    inputs: [
+      {
+        name: 'records',
+        type: 'input',
+        dataType: 'DataStream',
+        description: 'Records to partition',
+        required: true,
+      },
+    ],
+    outputs: [
+      {
+        name: 'partitioned',
+        type: 'output',
+        dataType: 'DataStream',
+        description: 'Records tagged with partition ID',
+        required: false,
+      },
+    ],
+    parameters: [
+      {
+        name: 'num_partitions',
+        type: 'number',
+        default: 4,
+        description: 'Number of partitions',
+        constraints: { min: 2, max: 256, step: 1 },
+        uiHint: 'slider',
+      },
+    ],
+    documentation: {
+      summary: 'Hash-based data partitioning for horizontal scaling',
+      details: 'Computes hash(key) % num_partitions to assign each record to a partition. Core to distributed databases like Cassandra, DynamoDB, and CockroachDB. Even distribution depends on key cardinality and hash quality.',
+    },
+  },
+
+  // ============== DISTRIBUTION BLOCKS ==============
+  {
+    type: 'replication',
+    name: 'Replication',
+    description: 'Writes data to multiple replicas with configurable consistency',
+    category: 'distribution',
+    icon: 'Network',
+    inputs: [
+      {
+        name: 'requests',
+        type: 'input',
+        dataType: 'DataStream',
+        description: 'Write operations to replicate',
+        required: true,
+      },
+    ],
+    outputs: [
+      {
+        name: 'replicated',
+        type: 'output',
+        dataType: 'DataStream',
+        description: 'Acknowledged replicated writes',
+        required: false,
+      },
+    ],
+    parameters: [
+      {
+        name: 'replication_factor',
+        type: 'number',
+        default: 3,
+        description: 'Number of copies to maintain',
+        constraints: { min: 1, max: 7, step: 1 },
+        uiHint: 'slider',
+      },
+      {
+        name: 'consistency_level',
+        type: 'enum',
+        default: 'quorum',
+        description: 'Ack requirement: one, quorum, or all',
+        constraints: { options: ['one', 'quorum', 'all'] },
+        uiHint: 'select',
+      },
+      {
+        name: 'async_replication',
+        type: 'boolean',
+        default: false,
+        description: 'Async mode: ack after one replica (faster but riskier)',
+        uiHint: 'checkbox',
+      },
+    ],
+    documentation: {
+      summary: 'Data replication for fault tolerance and availability',
+      details: 'Copies data to multiple nodes. Consistency level controls how many replicas must acknowledge: ONE (fast, may read stale), QUORUM (balanced), ALL (strong consistency but slower). This is the CAP theorem in action.',
+    },
+  },
+
+  // ============== COMPRESSION BLOCKS ==============
+  {
+    type: 'dictionary_encoding',
+    name: 'Dictionary Encoding',
+    description: 'Compresses low-cardinality data by mapping values to integer codes',
+    category: 'compression',
+    icon: 'Archive',
+    inputs: [
+      {
+        name: 'records',
+        type: 'input',
+        dataType: 'DataStream',
+        description: 'Records to compress',
+        required: true,
+      },
+    ],
+    outputs: [
+      {
+        name: 'compressed',
+        type: 'output',
+        dataType: 'DataStream',
+        description: 'Dictionary-encoded records',
+        required: false,
+      },
+    ],
+    parameters: [
+      {
+        name: 'max_dictionary_size',
+        type: 'number',
+        default: 4096,
+        description: 'Max distinct values before falling back to uncompressed',
+        constraints: { min: 16, max: 65536, step: 256 },
+        uiHint: 'slider',
+      },
+    ],
+    documentation: {
+      summary: 'Dictionary encoding for columnar compression',
+      details: 'Maps repeated values to compact integer codes. Extremely effective for low-cardinality columns (country, status, category). Used by Parquet, ClickHouse (LowCardinality type), and Vertica. Often combined with LZ4/ZSTD on top.',
+    },
+  },
 ];
 
 /**

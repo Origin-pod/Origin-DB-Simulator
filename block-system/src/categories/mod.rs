@@ -9,6 +9,10 @@ pub mod buffer;
 pub mod execution;
 pub mod concurrency;
 pub mod transaction;
+pub mod optimization;
+pub mod partitioning;
+pub mod distribution;
+pub mod compression;
 
 use serde::{Deserialize, Serialize};
 

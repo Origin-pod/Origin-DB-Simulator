@@ -17,6 +17,7 @@ import {
   Cloud,
   Sparkles,
   GraduationCap,
+  Library,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -28,6 +29,7 @@ import { exportDesign, validateImport, downloadFile } from '@/lib/persistence';
 import { toast } from '@/stores/toastStore';
 import { useAIStore } from '@/stores/aiStore';
 import { useChallengeStore } from '@/stores/challengeStore';
+import { useArchitectureStore } from '@/stores/architectureStore';
 
 interface TopBarProps {
   onOpenComparison: () => void;
@@ -247,6 +249,15 @@ export function TopBar({ onOpenComparison, onOpenTemplates }: TopBarProps) {
         >
           <GraduationCap className="w-4 h-4" />
           Challenges
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => useArchitectureStore.getState().openModal()}
+          disabled={isRunning}
+        >
+          <Library className="w-4 h-4" />
+          Architectures
         </Button>
         <Button
           variant="secondary"

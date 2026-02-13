@@ -20,6 +20,8 @@ import { AITeachingPanel } from '@/components/ai/AITeachingPanel';
 import { AISettingsModal } from '@/components/ai/AISettingsModal';
 import { ChallengeModal } from '@/components/challenges/ChallengeModal';
 import { ChallengeRunner } from '@/components/challenges/ChallengeRunner';
+import { ArchitectureModal } from '@/components/architectures/ArchitectureModal';
+import { ArchitectureAnnotations } from '@/components/architectures/ArchitectureAnnotations';
 
 function App() {
   const [comparisonOpen, setComparisonOpen] = useState(false);
@@ -70,6 +72,8 @@ function App() {
       <AISettingsModal />
       <ChallengeModal />
       <ChallengeRunner />
+      <ArchitectureModal />
+      <ArchitectureAnnotations />
       <ToastContainer />
     </ReactFlowProvider>
   );

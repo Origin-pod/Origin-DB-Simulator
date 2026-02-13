@@ -33,6 +33,11 @@ const BLOCK_CATEGORY_MAP: Record<string, Category> = {
   row_lock: 'concurrency',
   mvcc: 'concurrency',
   wal: 'transaction',
+  bloom_filter: 'index',
+  statistics_collector: 'execution',
+  hash_partitioner: 'storage',
+  replication: 'concurrency',
+  dictionary_encoding: 'storage',
 };
 
 function categoryOf(blockType: string): Category {
@@ -100,6 +105,24 @@ export class InsightEngine {
 
     // ------ Rule 8: Sequential scan explanation ------
     this.checkSequentialScan(sorted, insights, nextId);
+
+    // ------ Rule 9: LSM without Bloom filter ------
+    this.checkLsmWithoutBloom(insights, nextId);
+
+    // ------ Rule 10: Bloom filter effectiveness ------
+    this.checkBloomFilterEffectiveness(insights, nextId);
+
+    // ------ Rule 11: High replication + strong consistency ------
+    this.checkReplicationConsistency(insights, nextId);
+
+    // ------ Rule 12: Hash partitioner distribution ------
+    this.checkPartitionDistribution(insights, nextId);
+
+    // ------ Rule 13: Dictionary encoding compression ------
+    this.checkDictionaryCompression(insights, nextId);
+
+    // ------ Rule 14: Clock buffer vs LRU explanation ------
+    this.checkClockBuffer(insights, nextId);
 
     return insights;
   }
@@ -438,6 +461,297 @@ export class InsightEngine {
         realWorldExample:
           'PostgreSQL\'s query planner switches from index scan to sequential scan ' +
           'when it estimates more than ~5% of rows will match. This is called the "tipping point".',
+      });
+    }
+  }
+
+  private checkLsmWithoutBloom(
+    insights: Insight[],
+    nextId: () => string,
+  ) {
+    if (!this.blockTypes.has('lsm_tree')) return;
+    if (this.blockTypes.has('bloom_filter')) return;
+
+    insights.push({
+      id: nextId(),
+      type: 'opportunity',
+      severity: 'suggestion',
+      title: 'LSM Tree Without Bloom Filter',
+      explanation:
+        'Your LSM tree must check every SSTable level on reads because there is no Bloom filter to skip non-matching SSTables. ' +
+        'This causes significant read amplification.',
+      whyItMatters:
+        'Bloom filters are the standard optimization for LSM reads. They answer "is this key definitely NOT in this SSTable?" ' +
+        'in O(1) time, avoiding expensive disk reads.',
+      suggestion: 'Add a Bloom filter after the LSM tree to skip SSTables that don\'t contain the requested key.',
+      learnMore: { blockType: 'bloom_filter', section: 'useCases' },
+      realWorldExample:
+        'Cassandra and RocksDB both attach a Bloom filter to every SSTable. ' +
+        'With 10 bits per key, false positive rates drop below 1%, dramatically reducing read I/O.',
+    });
+  }
+
+  private checkBloomFilterEffectiveness(
+    insights: Insight[],
+    nextId: () => string,
+  ) {
+    for (const bm of this.result.blockMetrics) {
+      if (bm.blockType !== 'bloom_filter') continue;
+
+      const checks = bm.counters['checks'] ?? 0;
+      const fpRate = bm.counters['false_positive_rate'] ?? 0;
+      const trueNeg = bm.counters['true_negatives'] ?? 0;
+
+      if (checks === 0) continue;
+
+      if (fpRate > 0.05) {
+        insights.push({
+          id: nextId(),
+          type: 'bottleneck',
+          severity: 'suggestion',
+          title: `Bloom Filter False Positive Rate: ${(fpRate * 100).toFixed(1)}%`,
+          explanation:
+            `The Bloom filter checked ${fmtNum(checks)} queries but had a ${(fpRate * 100).toFixed(1)}% false positive rate. ` +
+            `This means ${(fpRate * 100).toFixed(1)}% of "maybe present" answers were wrong, causing unnecessary disk reads.`,
+          whyItMatters:
+            'A high false positive rate defeats the purpose of the Bloom filter. ' +
+            'Each false positive triggers an unnecessary SSTable read.',
+          suggestion:
+            'Increase num_bits or num_hash_functions to reduce false positives. ' +
+            'The optimal ratio is about 10 bits per expected item with 7 hash functions.',
+          learnMore: { blockType: 'bloom_filter', section: 'algorithm' },
+        });
+      } else if (trueNeg > 0) {
+        insights.push({
+          id: nextId(),
+          type: 'explanation',
+          severity: 'info',
+          title: `Bloom Filter Prevented ${fmtNum(trueNeg)} Unnecessary Reads`,
+          explanation:
+            `The Bloom filter checked ${fmtNum(checks)} queries and correctly rejected ${fmtNum(trueNeg)} — ` +
+            `each of those would have been a wasted disk read without the filter. ` +
+            `False positive rate: ${(fpRate * 100).toFixed(2)}%.`,
+          whyItMatters:
+            'This is the Bloom filter doing exactly what it\'s designed for: ' +
+            'trading a tiny amount of memory for massive I/O savings.',
+          learnMore: { blockType: 'bloom_filter', section: 'algorithm' },
+          realWorldExample:
+            'Cassandra uses ~10 bits per key, giving ~1% false positive rate. ' +
+            'This means 99% of unnecessary SSTable reads are eliminated.',
+        });
+      }
+    }
+  }
+
+  private checkReplicationConsistency(
+    insights: Insight[],
+    nextId: () => string,
+  ) {
+    for (const bm of this.result.blockMetrics) {
+      if (bm.blockType !== 'replication') continue;
+
+      const replicated = bm.counters['writes_replicated'] ?? 0;
+      const lagMs = bm.counters['replication_lag_ms'] ?? 0;
+      const violations = bm.counters['consistency_violations'] ?? 0;
+
+      const node = this.findNodeByBlockId(bm.blockId);
+      const rf = node ? Number((node.data as BlockNodeData).parameters['replication_factor'] ?? 3) : 3;
+      const cl = node ? String((node.data as BlockNodeData).parameters['consistency_level'] ?? 'quorum') : 'quorum';
+
+      if (rf >= 3 && cl === 'all') {
+        insights.push({
+          id: nextId(),
+          type: 'explanation',
+          severity: 'important',
+          title: `Full Consistency with ${rf} Replicas Adds Latency`,
+          explanation:
+            `With replication_factor=${rf} and consistency=ALL, every write must wait for ALL ${rf} replicas to acknowledge. ` +
+            `This added ${fmtMs(lagMs)} of replication latency across ${fmtNum(replicated)} writes.`,
+          whyItMatters:
+            'This is the CAP theorem in action. Requiring all replicas to acknowledge trades availability for consistency — ' +
+            'if any one replica is down, writes fail entirely.',
+          suggestion:
+            'Consider QUORUM consistency (majority of replicas) for a balance of consistency and availability. ' +
+            'QUORUM read + QUORUM write still guarantees linearizability.',
+          learnMore: { blockType: 'replication', section: 'tradeoffs' },
+          realWorldExample:
+            'Cassandra defaults to LOCAL_QUORUM. DynamoDB uses quorum internally across 3 AZs. ' +
+            'Full ALL consistency is rare in production due to availability concerns.',
+        });
+      } else if (violations > 0) {
+        insights.push({
+          id: nextId(),
+          type: 'bottleneck',
+          severity: 'suggestion',
+          title: `${violations} Consistency Violations Detected`,
+          explanation:
+            `With consistency=${cl.toUpperCase()}, ${violations} writes could not get enough acknowledgments. ` +
+            `These operations were accepted but may not be durable on all replicas.`,
+          whyItMatters:
+            'Consistency violations mean reads might return stale data. ' +
+            'This is acceptable for some use cases (caches, counters) but dangerous for financial data.',
+          suggestion: 'Increase consistency_level to QUORUM or ALL if data accuracy is critical.',
+          learnMore: { blockType: 'replication', section: 'tradeoffs' },
+        });
+      } else if (replicated > 0) {
+        insights.push({
+          id: nextId(),
+          type: 'explanation',
+          severity: 'info',
+          title: `Replicated ${fmtNum(replicated)} Writes Across ${rf} Nodes`,
+          explanation:
+            `Each write was sent to ${rf} replicas with ${cl.toUpperCase()} consistency. ` +
+            `Average replication lag: ${fmtMs(lagMs)}.`,
+          whyItMatters:
+            'Replication provides fault tolerance — if one node fails, the data exists on other replicas. ' +
+            'The consistency level determines the durability-latency tradeoff.',
+          learnMore: { blockType: 'replication', section: 'algorithm' },
+        });
+      }
+    }
+  }
+
+  private checkPartitionDistribution(
+    insights: Insight[],
+    nextId: () => string,
+  ) {
+    for (const bm of this.result.blockMetrics) {
+      if (bm.blockType !== 'hash_partitioner') continue;
+
+      const partitioned = bm.counters['records_partitioned'] ?? 0;
+      const hottest = bm.counters['hottest_partition_pct'] ?? 0;
+      const evenness = bm.counters['evenness_score'] ?? 0;
+
+      if (partitioned === 0) continue;
+
+      const node = this.findNodeByBlockId(bm.blockId);
+      const numPartitions = node ? Number((node.data as BlockNodeData).parameters['num_partitions'] ?? 8) : 8;
+
+      if (hottest > 30) {
+        insights.push({
+          id: nextId(),
+          type: 'bottleneck',
+          severity: 'important',
+          title: `Hot Partition Detected — ${hottest.toFixed(0)}% of Data in One Partition`,
+          explanation:
+            `With ${numPartitions} partitions, each should hold ~${(100 / numPartitions).toFixed(0)}% of data. ` +
+            `Instead, the hottest partition has ${hottest.toFixed(0)}%. Evenness score: ${(evenness * 100).toFixed(0)}%.`,
+          whyItMatters:
+            'Hot partitions defeat the purpose of partitioning — one node handles disproportionate load ' +
+            'while others sit idle. This is the #1 scaling problem in distributed databases.',
+          suggestion:
+            'Choose a partition key with high cardinality and even distribution. ' +
+            'Avoid keys like "date" or "region" that create natural hotspots.',
+          learnMore: { blockType: 'hash_partitioner', section: 'tradeoffs' },
+          realWorldExample:
+            'DynamoDB throttles hot partition keys. Cassandra\'s vnodes (virtual nodes) help, ' +
+            'but a bad partition key still creates hotspots.',
+        });
+      } else {
+        insights.push({
+          id: nextId(),
+          type: 'explanation',
+          severity: 'info',
+          title: `Hash Partitioner: ${fmtNum(partitioned)} Records Across ${numPartitions} Partitions`,
+          explanation:
+            `Data was distributed across ${numPartitions} partitions with ${(evenness * 100).toFixed(0)}% evenness. ` +
+            `Hottest partition: ${hottest.toFixed(0)}% (ideal: ${(100 / numPartitions).toFixed(0)}%).`,
+          whyItMatters:
+            'Good hash partitioning is the foundation of horizontal scaling. ' +
+            'Each partition can be served by a different node, scaling throughput linearly.',
+          learnMore: { blockType: 'hash_partitioner', section: 'algorithm' },
+        });
+      }
+    }
+  }
+
+  private checkDictionaryCompression(
+    insights: Insight[],
+    nextId: () => string,
+  ) {
+    for (const bm of this.result.blockMetrics) {
+      if (bm.blockType !== 'dictionary_encoding') continue;
+
+      const encoded = bm.counters['entries_encoded'] ?? 0;
+      const dictSize = bm.counters['dictionary_size'] ?? 0;
+      const ratio = bm.counters['compression_ratio'] ?? 1;
+      const fullEvents = bm.counters['dictionary_full_events'] ?? 0;
+
+      if (encoded === 0) continue;
+
+      if (ratio > 2) {
+        insights.push({
+          id: nextId(),
+          type: 'explanation',
+          severity: 'info',
+          title: `Dictionary Encoding Compressed Data ${ratio.toFixed(1)}x`,
+          explanation:
+            `Encoded ${fmtNum(encoded)} values using a dictionary of ${fmtNum(dictSize)} unique entries. ` +
+            `Compression ratio: ${ratio.toFixed(1)}x — each repeated value is stored as a small integer code instead of the full value.`,
+          whyItMatters:
+            'Dictionary encoding is most effective on low-cardinality columns (e.g., country, status, category). ' +
+            'Columnar databases like ClickHouse and Parquet use this extensively.',
+          learnMore: { blockType: 'dictionary_encoding', section: 'algorithm' },
+          realWorldExample:
+            'ClickHouse applies dictionary encoding automatically to columns with low cardinality. ' +
+            'A "country" column with 200 values can be stored in 1 byte per row instead of 20+.',
+        });
+      }
+
+      if (fullEvents > 0) {
+        insights.push({
+          id: nextId(),
+          type: 'bottleneck',
+          severity: 'suggestion',
+          title: `Dictionary Full — ${fullEvents} Values Couldn't Be Encoded`,
+          explanation:
+            `The dictionary reached its maximum size of ${fmtNum(dictSize)} entries. ` +
+            `${fullEvents} additional unique values were passed through without compression.`,
+          whyItMatters:
+            'When the dictionary is full, new unique values can\'t benefit from compression. ' +
+            'This typically means the column has higher cardinality than expected.',
+          suggestion:
+            'Increase max_dictionary_size, or reconsider whether this column benefits from dictionary encoding. ' +
+            'High-cardinality columns (like UUIDs) are poor candidates.',
+          learnMore: { blockType: 'dictionary_encoding', section: 'tradeoffs' },
+        });
+      }
+    }
+  }
+
+  private checkClockBuffer(
+    insights: Insight[],
+    nextId: () => string,
+  ) {
+    for (const bm of this.result.blockMetrics) {
+      if (bm.blockType !== 'clock_buffer') continue;
+
+      const hitRate = bm.counters['hit_rate_pct'] ?? 0;
+      const sweeps = bm.counters['clock_hand_sweeps'] ?? 0;
+      const evictions = bm.counters['evictions'] ?? 0;
+
+      if (hitRate === 0 && evictions === 0) continue;
+
+      // Check if there's also an LRU buffer to compare
+      const hasLru = this.blockTypes.has('lru_buffer');
+
+      insights.push({
+        id: nextId(),
+        type: 'explanation',
+        severity: 'info',
+        title: `Clock Buffer: ${hitRate.toFixed(0)}% Hit Rate, ${fmtNum(sweeps)} Clock Sweeps`,
+        explanation:
+          `The CLOCK algorithm uses a circular buffer with reference bits. On eviction, the clock hand sweeps ` +
+          `and clears reference bits until it finds an unreferenced page. ` +
+          `${fmtNum(evictions)} evictions required ${fmtNum(sweeps)} clock hand sweeps.` +
+          (hasLru ? ' Compare this with the LRU buffer in your design to see the difference.' : ''),
+        whyItMatters:
+          'CLOCK approximates LRU with lower overhead — it avoids moving pages to the front of a list on every access. ' +
+          'PostgreSQL uses a CLOCK-based algorithm for its buffer manager for exactly this reason.',
+        learnMore: { blockType: 'clock_buffer', section: 'algorithm' },
+        realWorldExample:
+          'PostgreSQL\'s buffer manager uses a clock-sweep algorithm. Each buffer page has a "usage count" ' +
+          'that decrements on each sweep pass. Pages with higher counts survive longer.',
       });
     }
   }

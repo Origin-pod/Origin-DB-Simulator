@@ -385,6 +385,9 @@ export function ParameterPanel() {
     updateNodeData(selectedNode.id, { parameters: defaults });
   }, [blockDef, selectedNode?.id, updateNodeData]);
 
+  const [activeTab, setActiveTab] = useState<'configure' | 'learn'>('configure');
+  const hasEducation = !!(blockDef?.documentation?.overview || blockDef?.documentation?.algorithm || blockDef?.documentation?.details);
+
   if (!selectedNode || !data) {
     return (
       <aside className="w-72 bg-white border-l border-gray-200 flex flex-col">
@@ -405,9 +408,6 @@ export function ParameterPanel() {
   const handleDelete = () => {
     removeNode(selectedNode.id);
   };
-
-  const [activeTab, setActiveTab] = useState<'configure' | 'learn'>('configure');
-  const hasEducation = !!(blockDef?.documentation?.overview || blockDef?.documentation?.algorithm || blockDef?.documentation?.details);
 
   return (
     <aside className="w-72 bg-white border-l border-gray-200 flex flex-col">

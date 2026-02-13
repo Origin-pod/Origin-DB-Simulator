@@ -14,12 +14,16 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use crate::categories::buffer::LRUBufferBlock;
+use crate::categories::buffer::{LRUBufferBlock, ClockBufferBlock};
+use crate::categories::compression::DictionaryEncodingBlock;
 use crate::categories::concurrency::{MVCCBlock, RowLockBlock};
+use crate::categories::distribution::ReplicationBlock;
 use crate::categories::execution::{
     FilterBlock, HashJoinBlock, IndexScanBlock, SequentialScanBlock, SortBlock,
 };
 use crate::categories::index::{BTreeIndexBlock, CoveringIndexBlock, HashIndexBlock};
+use crate::categories::optimization::{BloomFilterBlock, StatisticsCollectorBlock};
+use crate::categories::partitioning::HashPartitionerBlock;
 use crate::categories::storage::{
     ClusteredStorageBlock, ColumnarStorageBlock, HeapFileBlock, LSMTreeBlock,
 };
@@ -442,10 +446,17 @@ fn create_block(block_type: &str) -> Result<Box<dyn Block>, String> {
         "row_lock" | "row_lock_2pl" => Ok(Box::new(RowLockBlock::new())),
         "mvcc" => Ok(Box::new(MVCCBlock::new())),
         "wal" | "write_ahead_log" => Ok(Box::new(WALBlock::new())),
+        "clock_buffer" | "clock_cache" => Ok(Box::new(ClockBufferBlock::new())),
+        "bloom_filter" => Ok(Box::new(BloomFilterBlock::new())),
+        "statistics_collector" | "stats_collector" => Ok(Box::new(StatisticsCollectorBlock::new())),
+        "hash_partitioner" => Ok(Box::new(HashPartitionerBlock::new())),
+        "replication" => Ok(Box::new(ReplicationBlock::new())),
+        "dictionary_encoding" | "dict_encoding" => Ok(Box::new(DictionaryEncodingBlock::new())),
         _ => Err(format!(
             "Unknown block type: '{}'. Available: heap_storage, lsm_tree, clustered_storage, \
-             columnar_storage, btree_index, hash_index, covering_index, lru_buffer, \
-             sequential_scan, index_scan, filter, sort, hash_join, row_lock, mvcc, wal",
+             columnar_storage, btree_index, hash_index, covering_index, lru_buffer, clock_buffer, \
+             sequential_scan, index_scan, filter, sort, hash_join, row_lock, mvcc, wal, \
+             bloom_filter, statistics_collector, hash_partitioner, replication, dictionary_encoding",
             block_type
         )),
     }
@@ -814,6 +825,47 @@ pub fn get_block_types() -> String {
             category: "Transaction".into(),
             description: "Append-only log for crash recovery and transaction durability".into(),
         },
+        // Buffer (additional)
+        BlockTypeInfo {
+            block_type: "clock_buffer".into(),
+            name: "Clock Buffer Pool".into(),
+            category: "Buffer".into(),
+            description: "Page cache with CLOCK (second-chance) eviction — used by PostgreSQL".into(),
+        },
+        // Optimization
+        BlockTypeInfo {
+            block_type: "bloom_filter".into(),
+            name: "Bloom Filter".into(),
+            category: "Optimization".into(),
+            description: "Probabilistic filter that prevents unnecessary disk reads".into(),
+        },
+        BlockTypeInfo {
+            block_type: "statistics_collector".into(),
+            name: "Statistics Collector".into(),
+            category: "Optimization".into(),
+            description: "Gathers table/column statistics for cost-based query planning".into(),
+        },
+        // Partitioning
+        BlockTypeInfo {
+            block_type: "hash_partitioner".into(),
+            name: "Hash Partitioner".into(),
+            category: "Partitioning".into(),
+            description: "Distributes records across partitions by hashing a key".into(),
+        },
+        // Distribution
+        BlockTypeInfo {
+            block_type: "replication".into(),
+            name: "Replication".into(),
+            category: "Distribution".into(),
+            description: "Writes data to multiple replicas with configurable consistency".into(),
+        },
+        // Compression
+        BlockTypeInfo {
+            block_type: "dictionary_encoding".into(),
+            name: "Dictionary Encoding".into(),
+            category: "Compression".into(),
+            description: "Compresses low-cardinality data by mapping values to integer codes".into(),
+        },
     ];
 
     serde_json::to_string(&types).unwrap_or_default()
@@ -831,9 +883,11 @@ pub fn get_block_detail(block_type: &str) -> String {
 pub fn get_all_block_details() -> String {
     let type_strings = [
         "heap_storage", "lsm_tree", "clustered_storage", "columnar_storage",
-        "btree_index", "hash_index", "covering_index", "lru_buffer",
+        "btree_index", "hash_index", "covering_index", "lru_buffer", "clock_buffer",
         "sequential_scan", "index_scan", "filter", "sort", "hash_join",
         "row_lock", "mvcc", "wal",
+        "bloom_filter", "statistics_collector", "hash_partitioner", "replication",
+        "dictionary_encoding",
     ];
     let details: Vec<BlockDetailResponse> = type_strings
         .iter()
