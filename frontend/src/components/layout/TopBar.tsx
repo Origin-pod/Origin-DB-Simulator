@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   Cloud,
   Sparkles,
+  GraduationCap,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -26,6 +27,7 @@ import type { BlockNodeData } from '@/types';
 import { exportDesign, validateImport, downloadFile } from '@/lib/persistence';
 import { toast } from '@/stores/toastStore';
 import { useAIStore } from '@/stores/aiStore';
+import { useChallengeStore } from '@/stores/challengeStore';
 
 interface TopBarProps {
   onOpenComparison: () => void;
@@ -236,6 +238,15 @@ export function TopBar({ onOpenComparison, onOpenTemplates }: TopBarProps) {
         >
           <LayoutTemplate className="w-4 h-4" />
           Templates
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => useChallengeStore.getState().openModal()}
+          disabled={isRunning}
+        >
+          <GraduationCap className="w-4 h-4" />
+          Challenges
         </Button>
         <Button
           variant="secondary"

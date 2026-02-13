@@ -18,6 +18,8 @@ import { OnboardingTutorial } from '@/components/onboarding/OnboardingTutorial';
 import { ToastContainer } from '@/components/ui/ToastContainer';
 import { AITeachingPanel } from '@/components/ai/AITeachingPanel';
 import { AISettingsModal } from '@/components/ai/AISettingsModal';
+import { ChallengeModal } from '@/components/challenges/ChallengeModal';
+import { ChallengeRunner } from '@/components/challenges/ChallengeRunner';
 
 function App() {
   const [comparisonOpen, setComparisonOpen] = useState(false);
@@ -66,6 +68,8 @@ function App() {
       <OnboardingTutorial onOpenTemplates={openTemplates} />
       <AITeachingPanel />
       <AISettingsModal />
+      <ChallengeModal />
+      <ChallengeRunner />
       <ToastContainer />
     </ReactFlowProvider>
   );
