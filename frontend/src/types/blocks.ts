@@ -283,10 +283,10 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'stored',
+        name: 'projected',
         type: 'output',
         dataType: 'DataStream',
-        description: 'Access to stored columns',
+        description: 'Access to projected columns',
         required: false,
       },
     ],
@@ -378,10 +378,10 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'lookup',
+        name: 'lookup_results',
         type: 'output',
         dataType: 'SingleValue',
-        description: 'Index lookup capability',
+        description: 'Index lookup results',
         required: false,
       },
     ],
@@ -431,10 +431,10 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'lookup',
+        name: 'lookup_results',
         type: 'output',
         dataType: 'SingleValue',
-        description: 'Index lookup capability',
+        description: 'Index lookup results',
         required: false,
       },
     ],
@@ -477,7 +477,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'lookup',
+        name: 'index_results',
         type: 'output',
         dataType: 'DataStream',
         description: 'Index lookup with included columns',
@@ -603,7 +603,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     icon: 'Cpu',
     inputs: [
       {
-        name: 'storage',
+        name: 'records',
         type: 'input',
         dataType: 'DataStream',
         description: 'Storage to scan',
@@ -612,7 +612,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'records',
+        name: 'results',
         type: 'output',
         dataType: 'DataStream',
         description: 'Scanned records',
@@ -642,23 +642,23 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     icon: 'Search',
     inputs: [
       {
-        name: 'index',
+        name: 'records',
         type: 'input',
-        dataType: 'SingleValue',
-        description: 'Index to use for lookup',
+        dataType: 'DataStream',
+        description: 'Records to scan',
         required: true,
       },
       {
-        name: 'storage',
+        name: 'index_results',
         type: 'input',
-        dataType: 'DataStream',
-        description: 'Storage containing records',
+        dataType: 'SingleValue',
+        description: 'Index lookup results',
         required: true,
       },
     ],
     outputs: [
       {
-        name: 'records',
+        name: 'results',
         type: 'output',
         dataType: 'DataStream',
         description: 'Matching records',
@@ -688,7 +688,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'filtered',
+        name: 'results',
         type: 'output',
         dataType: 'DataStream',
         description: 'Filtered records',
@@ -763,17 +763,17 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     icon: 'Merge',
     inputs: [
       {
-        name: 'left',
+        name: 'build',
         type: 'input',
         dataType: 'DataStream',
-        description: 'Left input (build side)',
+        description: 'Build side input (smaller relation)',
         required: true,
       },
       {
-        name: 'right',
+        name: 'probe',
         type: 'input',
         dataType: 'DataStream',
-        description: 'Right input (probe side)',
+        description: 'Probe side input (larger relation)',
         required: true,
       },
     ],
@@ -818,7 +818,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     icon: 'Lock',
     inputs: [
       {
-        name: 'operations',
+        name: 'records',
         type: 'input',
         dataType: 'Transaction',
         description: 'Operations requiring locks',
@@ -827,7 +827,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'locked',
+        name: 'committed',
         type: 'output',
         dataType: 'Transaction',
         description: 'Operations with locks acquired',
@@ -864,7 +864,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     icon: 'GitBranch',
     inputs: [
       {
-        name: 'operations',
+        name: 'records',
         type: 'input',
         dataType: 'Transaction',
         description: 'Operations to coordinate',
@@ -873,7 +873,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'versioned',
+        name: 'visible',
         type: 'output',
         dataType: 'Transaction',
         description: 'Version-controlled operations',
@@ -913,7 +913,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     icon: 'FileText',
     inputs: [
       {
-        name: 'writes',
+        name: 'records',
         type: 'input',
         dataType: 'DataStream',
         description: 'Write operations to log',
@@ -922,7 +922,7 @@ export const BLOCK_REGISTRY: BlockDefinition[] = [
     ],
     outputs: [
       {
-        name: 'durable',
+        name: 'logged',
         type: 'output',
         dataType: 'DataStream',
         description: 'Durably logged writes',

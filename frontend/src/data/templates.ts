@@ -98,7 +98,7 @@ function buildOLTP(): DesignTemplate {
     makeEdge(schema, 'schema', heap, 'records'),
     makeEdge(heap, 'stored', btree, 'records'),
     makeEdge(heap, 'stored', buffer, 'requests'),
-    makeEdge(buffer, 'pages', seqScan, 'storage'),
+    makeEdge(buffer, 'pages', seqScan, 'records'),
   ];
 
   return {
@@ -139,7 +139,7 @@ function buildWriteHeavy(): DesignTemplate {
 
   const edges = [
     makeEdge(schema, 'schema', lsm, 'records'),
-    makeEdge(schema, 'schema', wal, 'writes'),
+    makeEdge(schema, 'schema', wal, 'records'),
     makeEdge(lsm, 'stored', filter, 'records'),
   ];
 
@@ -229,7 +229,7 @@ function buildConcurrentMVCC(): DesignTemplate {
   const edges = [
     makeEdge(schema, 'schema', heap, 'records'),
     makeEdge(heap, 'stored', btree, 'records'),
-    makeEdge(schema, 'schema', wal, 'writes'),
+    makeEdge(schema, 'schema', wal, 'records'),
   ];
 
   return {
