@@ -363,8 +363,29 @@ export function ParameterPanel() {
     useCanvasStore();
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
+  const data = selectedNode?.data as BlockNodeData | undefined;
+  const blockDef = data ? getBlockDefinition(data.blockType) : undefined;
 
-  if (!selectedNode) {
+  const handleParamUpdate = useCallback(
+    (name: string, value: string | number | boolean) => {
+      if (!selectedNode || !data) return;
+      updateNodeData(selectedNode.id, {
+        parameters: { ...data.parameters, [name]: value },
+      });
+    },
+    [selectedNode?.id, data?.parameters, updateNodeData],
+  );
+
+  const handleResetDefaults = useCallback(() => {
+    if (!blockDef || !selectedNode) return;
+    const defaults: Record<string, string | number | boolean> = {};
+    for (const p of blockDef.parameters) {
+      defaults[p.name] = p.default;
+    }
+    updateNodeData(selectedNode.id, { parameters: defaults });
+  }, [blockDef, selectedNode?.id, updateNodeData]);
+
+  if (!selectedNode || !data) {
     return (
       <aside className="w-72 bg-white border-l border-gray-200 flex flex-col">
         <div className="flex-1 flex items-center justify-center">
@@ -379,31 +400,11 @@ export function ParameterPanel() {
     );
   }
 
-  const data = selectedNode.data as BlockNodeData;
   const categoryColor = CATEGORY_COLORS[data.category];
-  const blockDef = getBlockDefinition(data.blockType);
 
   const handleDelete = () => {
     removeNode(selectedNode.id);
   };
-
-  const handleParamUpdate = useCallback(
-    (name: string, value: string | number | boolean) => {
-      updateNodeData(selectedNode.id, {
-        parameters: { ...data.parameters, [name]: value },
-      });
-    },
-    [selectedNode.id, data.parameters, updateNodeData],
-  );
-
-  const handleResetDefaults = useCallback(() => {
-    if (!blockDef) return;
-    const defaults: Record<string, string | number | boolean> = {};
-    for (const p of blockDef.parameters) {
-      defaults[p.name] = p.default;
-    }
-    updateNodeData(selectedNode.id, { parameters: defaults });
-  }, [blockDef, selectedNode.id, updateNodeData]);
 
   return (
     <aside className="w-72 bg-white border-l border-gray-200 flex flex-col">
