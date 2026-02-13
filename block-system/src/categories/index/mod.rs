@@ -4,6 +4,8 @@
 
 pub mod btree;
 pub mod hash_index;
+pub mod covering_index;
 
 pub use btree::BTreeIndexBlock;
 pub use hash_index::HashIndexBlock;
+pub use covering_index::CoveringIndexBlock;

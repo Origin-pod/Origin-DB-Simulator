@@ -15,10 +15,14 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::categories::buffer::LRUBufferBlock;
-use crate::categories::concurrency::RowLockBlock;
-use crate::categories::execution::{IndexScanBlock, SequentialScanBlock};
-use crate::categories::index::{BTreeIndexBlock, HashIndexBlock};
-use crate::categories::storage::{HeapFileBlock, LSMTreeBlock};
+use crate::categories::concurrency::{MVCCBlock, RowLockBlock};
+use crate::categories::execution::{
+    FilterBlock, HashJoinBlock, IndexScanBlock, SequentialScanBlock, SortBlock,
+};
+use crate::categories::index::{BTreeIndexBlock, CoveringIndexBlock, HashIndexBlock};
+use crate::categories::storage::{
+    ClusteredStorageBlock, ColumnarStorageBlock, HeapFileBlock, LSMTreeBlock,
+};
 use crate::categories::transaction::WALBlock;
 use crate::core::block::Block;
 use crate::core::parameter::ParameterValue;
@@ -216,16 +220,24 @@ fn create_block(block_type: &str) -> Result<Box<dyn Block>, String> {
     match block_type {
         "heap_storage" | "heap_file" => Ok(Box::new(HeapFileBlock::new())),
         "lsm_tree" | "lsm_storage" => Ok(Box::new(LSMTreeBlock::new())),
+        "clustered_storage" | "clustered" => Ok(Box::new(ClusteredStorageBlock::new())),
+        "columnar_storage" | "columnar" => Ok(Box::new(ColumnarStorageBlock::new())),
         "btree_index" | "b_tree_index" => Ok(Box::new(BTreeIndexBlock::new())),
         "hash_index" => Ok(Box::new(HashIndexBlock::new())),
+        "covering_index" => Ok(Box::new(CoveringIndexBlock::new())),
         "lru_buffer" | "lru_cache" => Ok(Box::new(LRUBufferBlock::new())),
         "sequential_scan" | "seq_scan" => Ok(Box::new(SequentialScanBlock::new())),
         "index_scan" => Ok(Box::new(IndexScanBlock::new())),
+        "filter" => Ok(Box::new(FilterBlock::new())),
+        "sort" => Ok(Box::new(SortBlock::new())),
+        "hash_join" => Ok(Box::new(HashJoinBlock::new())),
         "row_lock" | "row_lock_2pl" => Ok(Box::new(RowLockBlock::new())),
+        "mvcc" => Ok(Box::new(MVCCBlock::new())),
         "wal" | "write_ahead_log" => Ok(Box::new(WALBlock::new())),
         _ => Err(format!(
-            "Unknown block type: '{}'. Available: heap_storage, lsm_tree, btree_index, \
-             hash_index, lru_buffer, sequential_scan, index_scan, row_lock, wal",
+            "Unknown block type: '{}'. Available: heap_storage, lsm_tree, clustered_storage, \
+             columnar_storage, btree_index, hash_index, covering_index, lru_buffer, \
+             sequential_scan, index_scan, filter, sort, hash_join, row_lock, mvcc, wal",
             block_type
         )),
     }
@@ -479,6 +491,7 @@ pub fn get_metrics() -> String {
 #[wasm_bindgen]
 pub fn get_block_types() -> String {
     let types = vec![
+        // Storage
         BlockTypeInfo {
             block_type: "heap_storage".into(),
             name: "Heap File Storage".into(),
@@ -491,6 +504,19 @@ pub fn get_block_types() -> String {
             category: "Storage".into(),
             description: "Log-Structured Merge-Tree with memtable, SSTables, and compaction".into(),
         },
+        BlockTypeInfo {
+            block_type: "clustered_storage".into(),
+            name: "Clustered Storage".into(),
+            category: "Storage".into(),
+            description: "Records physically ordered by cluster key for fast range scans".into(),
+        },
+        BlockTypeInfo {
+            block_type: "columnar_storage".into(),
+            name: "Columnar Storage".into(),
+            category: "Storage".into(),
+            description: "Column-oriented storage for analytical workloads with projection pushdown".into(),
+        },
+        // Index
         BlockTypeInfo {
             block_type: "btree_index".into(),
             name: "B-Tree Index".into(),
@@ -505,11 +531,19 @@ pub fn get_block_types() -> String {
             description: "Hash-based index for O(1) point lookups with bucket chaining".into(),
         },
         BlockTypeInfo {
+            block_type: "covering_index".into(),
+            name: "Covering Index".into(),
+            category: "Index".into(),
+            description: "Index with included columns for index-only scans without table lookups".into(),
+        },
+        // Buffer
+        BlockTypeInfo {
             block_type: "lru_buffer".into(),
             name: "LRU Buffer Pool".into(),
             category: "Buffer".into(),
             description: "Least Recently Used page cache with configurable pool size".into(),
         },
+        // Execution
         BlockTypeInfo {
             block_type: "sequential_scan".into(),
             name: "Sequential Scan".into(),
@@ -523,11 +557,37 @@ pub fn get_block_types() -> String {
             description: "Uses an index to fetch only matching records from storage".into(),
         },
         BlockTypeInfo {
+            block_type: "filter".into(),
+            name: "Filter".into(),
+            category: "Execution".into(),
+            description: "Predicate filter with configurable column, operator, and value".into(),
+        },
+        BlockTypeInfo {
+            block_type: "sort".into(),
+            name: "Sort".into(),
+            category: "Execution".into(),
+            description: "Sort records by column with in-memory or external merge sort".into(),
+        },
+        BlockTypeInfo {
+            block_type: "hash_join".into(),
+            name: "Hash Join".into(),
+            category: "Execution".into(),
+            description: "Build-probe hash join for equi-join queries".into(),
+        },
+        // Concurrency
+        BlockTypeInfo {
             block_type: "row_lock".into(),
             name: "Row Lock (2PL)".into(),
             category: "Concurrency".into(),
             description: "Strict two-phase locking with deadlock detection".into(),
         },
+        BlockTypeInfo {
+            block_type: "mvcc".into(),
+            name: "MVCC".into(),
+            category: "Concurrency".into(),
+            description: "Multi-Version Concurrency Control with snapshot isolation".into(),
+        },
+        // Transaction
         BlockTypeInfo {
             block_type: "wal".into(),
             name: "Write-Ahead Log".into(),
