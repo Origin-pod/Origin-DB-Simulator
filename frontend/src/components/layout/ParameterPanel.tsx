@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { X, Settings, Trash2, Info, HelpCircle, RotateCcw } from 'lucide-react';
+import { X, Settings, Trash2, Info, HelpCircle, RotateCcw, BookOpen } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { BlockEducationPanel } from '@/components/education/BlockEducationPanel';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -406,6 +406,9 @@ export function ParameterPanel() {
     removeNode(selectedNode.id);
   };
 
+  const [activeTab, setActiveTab] = useState<'configure' | 'learn'>('configure');
+  const hasEducation = !!(blockDef?.documentation?.overview || blockDef?.documentation?.algorithm || blockDef?.documentation?.details);
+
   return (
     <aside className="w-72 bg-white border-l border-gray-200 flex flex-col">
       {/* Header */}
@@ -449,114 +452,150 @@ export function ParameterPanel() {
         )}
       </div>
 
-      {/* Configuration */}
-      <div className="flex-1 overflow-y-auto">
-        {/* Parameters Section */}
-        {blockDef && blockDef.parameters.length > 0 && (
-          <div className="p-4 border-b border-gray-100">
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-medium text-gray-900 flex items-center gap-2">
-                <Settings className="w-4 h-4 text-gray-400" />
-                Configuration
-              </h4>
-              <button
-                onClick={handleResetDefaults}
-                className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
-                title="Reset all parameters to defaults"
-              >
-                <RotateCcw className="w-3 h-3" />
-                Reset
-              </button>
-            </div>
-            <div className="space-y-3">
-              {blockDef.parameters.map((param) => {
-                const value = data.parameters[param.name] ?? param.default;
-                return (
-                  <ParameterRow
-                    key={param.name}
-                    param={param}
-                    value={value}
-                    onUpdate={handleParamUpdate}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Ports Section */}
-        <div className="p-4">
-          <h4 className="text-sm font-medium text-gray-900 mb-3 flex items-center gap-2">
-            <Info className="w-4 h-4 text-gray-400" />
-            Ports
-          </h4>
-
-          {data.inputs.length > 0 && (
-            <div className="mb-4">
-              <p className="text-xs font-medium text-gray-500 mb-2">Inputs</p>
-              <div className="space-y-2">
-                {data.inputs.map((port: PortDefinition) => (
-                  <div
-                    key={port.name}
-                    className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg"
-                  >
-                    <span
-                      className="w-3 h-3 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-sm text-gray-700 block truncate">
-                        {port.name}
-                      </span>
-                      <span className="text-xs text-gray-400">
-                        {port.dataType}
-                        {port.required && (
-                          <span className="text-red-500 ml-1">*</span>
-                        )}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {data.outputs.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-gray-500 mb-2">Outputs</p>
-              <div className="space-y-2">
-                {data.outputs.map((port: PortDefinition) => (
-                  <div
-                    key={port.name}
-                    className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg"
-                  >
-                    <span
-                      className="w-3 h-3 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-sm text-gray-700 block truncate">
-                        {port.name}
-                      </span>
-                      <span className="text-xs text-gray-400">{port.dataType}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {data.inputs.length === 0 && data.outputs.length === 0 && (
-            <p className="text-sm text-gray-500 text-center py-4">
-              This block has no ports
-            </p>
-          )}
+      {/* Tabs */}
+      {hasEducation && (
+        <div className="flex border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('configure')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
+              activeTab === 'configure'
+                ? 'text-gray-900 border-b-2 border-gray-900'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <Settings className="w-3.5 h-3.5" />
+            Configure
+          </button>
+          <button
+            onClick={() => setActiveTab('learn')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
+              activeTab === 'learn'
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            Learn
+          </button>
         </div>
+      )}
 
-        {/* Education / Documentation Section */}
-        {blockDef && (
-          <div className="p-4 border-t border-gray-100">
-            <BlockEducationPanel block={blockDef} compact />
+      {/* Tab content */}
+      <div className="flex-1 overflow-y-auto">
+        {activeTab === 'configure' ? (
+          <>
+            {/* Parameters Section */}
+            {blockDef && blockDef.parameters.length > 0 && (
+              <div className="p-4 border-b border-gray-100">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                    <Settings className="w-4 h-4 text-gray-400" />
+                    Configuration
+                  </h4>
+                  <button
+                    onClick={handleResetDefaults}
+                    className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+                    title="Reset all parameters to defaults"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Reset
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {blockDef.parameters.map((param) => {
+                    const value = data.parameters[param.name] ?? param.default;
+                    return (
+                      <ParameterRow
+                        key={param.name}
+                        param={param}
+                        value={value}
+                        onUpdate={handleParamUpdate}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Ports Section */}
+            <div className="p-4">
+              <h4 className="text-sm font-medium text-gray-900 mb-3 flex items-center gap-2">
+                <Info className="w-4 h-4 text-gray-400" />
+                Ports
+              </h4>
+
+              {data.inputs.length > 0 && (
+                <div className="mb-4">
+                  <p className="text-xs font-medium text-gray-500 mb-2">Inputs</p>
+                  <div className="space-y-2">
+                    {data.inputs.map((port: PortDefinition) => (
+                      <div
+                        key={port.name}
+                        className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg"
+                      >
+                        <span
+                          className="w-3 h-3 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm text-gray-700 block truncate">
+                            {port.name}
+                          </span>
+                          <span className="text-xs text-gray-400">
+                            {port.dataType}
+                            {port.required && (
+                              <span className="text-red-500 ml-1">*</span>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {data.outputs.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-gray-500 mb-2">Outputs</p>
+                  <div className="space-y-2">
+                    {data.outputs.map((port: PortDefinition) => (
+                      <div
+                        key={port.name}
+                        className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg"
+                      >
+                        <span
+                          className="w-3 h-3 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: DATA_TYPE_COLORS[port.dataType] }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm text-gray-700 block truncate">
+                            {port.name}
+                          </span>
+                          <span className="text-xs text-gray-400">{port.dataType}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {data.inputs.length === 0 && data.outputs.length === 0 && (
+                <p className="text-sm text-gray-500 text-center py-4">
+                  This block has no ports
+                </p>
+              )}
+            </div>
+          </>
+        ) : (
+          /* Learn tab — education content expanded */
+          <div className="p-4">
+            {blockDef ? (
+              <BlockEducationPanel block={blockDef} compact={false} />
+            ) : (
+              <p className="text-sm text-gray-500 text-center py-8">
+                No documentation available for this block.
+              </p>
+            )}
           </div>
         )}
       </div>

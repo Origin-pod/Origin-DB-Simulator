@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback } from 'react';
 import {
   ChevronDown,
   ChevronUp,
@@ -8,16 +8,21 @@ import {
   HardDrive,
   AlertTriangle,
   Lightbulb,
+  BookOpen,
+  Sparkles,
   Download,
   Copy,
   CheckCircle2,
   X,
 } from 'lucide-react';
 import { useExecutionStore } from '@/stores/executionStore';
+import { useAIStore } from '@/stores/aiStore';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { useWorkloadStore } from '@/stores/workloadStore';
 import { CATEGORY_COLORS, type BlockCategory, type BlockNodeData } from '@/types';
 import type { BlockMetrics, ExecutionResult } from '@/engine/types';
+import type { Insight } from '@/engine/insights';
+import { getBlockDefinition } from '@/types/blocks';
 import { downloadFile } from '@/lib/persistence';
 
 // ---------------------------------------------------------------------------
@@ -60,90 +65,18 @@ function blockCategory(blockType: string): BlockCategory {
 }
 
 // ---------------------------------------------------------------------------
-// Bottleneck / suggestion engine
+// Metric description lookup — enriches counter values with definitions
 // ---------------------------------------------------------------------------
 
-interface Suggestion {
-  type: 'performance' | 'warning';
-  icon: 'alert' | 'lightbulb';
-  message: string;
-  detail: string;
-}
-
-function generateSuggestions(result: ExecutionResult): Suggestion[] {
-  const suggestions: Suggestion[] = [];
-  const sorted = [...result.blockMetrics].sort(
-    (a, b) => b.percentage - a.percentage,
+function getMetricDescription(blockType: string, metricKey: string): string | undefined {
+  const def = getBlockDefinition(blockType);
+  if (!def?.metricDefinitions) return undefined;
+  // Match by id (exact) or by normalized key
+  const normalized = metricKey.replace(/_/g, ' ').toLowerCase();
+  const match = def.metricDefinitions.find(
+    (m) => m.id === metricKey || m.name.toLowerCase() === normalized,
   );
-
-  if (sorted.length === 0) return suggestions;
-
-  const top = sorted[0];
-
-  // Bottleneck: top block > 40%
-  if (top.percentage > 40) {
-    const cat = blockCategory(top.blockType);
-
-    if (cat === 'storage') {
-      suggestions.push({
-        type: 'performance',
-        icon: 'alert',
-        message: `Storage is the bottleneck — "${top.blockName}" consumed ${top.percentage}% of execution time.`,
-        detail:
-          'Consider adding a buffer pool (LRU or Clock) to reduce disk I/O, or switch to clustered storage for better locality.',
-      });
-    } else if (cat === 'index') {
-      suggestions.push({
-        type: 'performance',
-        icon: 'alert',
-        message: `Index lookup is the bottleneck — "${top.blockName}" consumed ${top.percentage}% of time.`,
-        detail:
-          'Try increasing the B-tree fanout to reduce tree depth, or use a hash index for point lookups.',
-      });
-    } else if (cat === 'execution') {
-      suggestions.push({
-        type: 'performance',
-        icon: 'alert',
-        message: `Query execution is the bottleneck — "${top.blockName}" consumed ${top.percentage}% of time.`,
-        detail:
-          'Add an index to avoid sequential scans, or increase the memory limit for sort/join operations.',
-      });
-    } else {
-      suggestions.push({
-        type: 'performance',
-        icon: 'alert',
-        message: `"${top.blockName}" consumed ${top.percentage}% of execution time.`,
-        detail: 'Review its parameters to see if tuning can reduce overhead.',
-      });
-    }
-  }
-
-  // Low cache hit rate
-  for (const bm of result.blockMetrics) {
-    const hitRate = bm.counters['hit_rate_pct'];
-    if (hitRate !== undefined && hitRate < 70) {
-      suggestions.push({
-        type: 'warning',
-        icon: 'lightbulb',
-        message: `Cache hit rate is low (${hitRate}%) on "${bm.blockName}".`,
-        detail:
-          'Increase the buffer pool size to keep more pages in memory and reduce disk reads.',
-      });
-    }
-  }
-
-  // High latency
-  if (result.metrics.latency.p99 > result.metrics.latency.avg * 10) {
-    suggestions.push({
-      type: 'warning',
-      icon: 'lightbulb',
-      message: 'High tail latency — p99 is 10x the average.',
-      detail:
-        'This typically indicates contention or spilling to disk. Check concurrency settings and memory limits.',
-    });
-  }
-
-  return suggestions;
+  return match?.description;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,53 +210,136 @@ function BlockBar({ bm, maxPct }: { bm: BlockMetrics; maxPct: number }) {
         )}
       </button>
       {expanded && counters.length > 0 && (
-        <div className="ml-40 mb-2 grid grid-cols-3 gap-x-4 gap-y-0.5">
-          {counters.map(([key, val]) => (
-            <div key={key} className="flex justify-between text-[11px]">
-              <span className="text-gray-400">{key.replace(/_/g, ' ')}</span>
-              <span className="font-mono text-gray-600">{fmtNum(val)}</span>
-            </div>
-          ))}
+        <div className="ml-40 mb-2 space-y-0.5">
+          {counters.map(([key, val]) => {
+            const desc = getMetricDescription(bm.blockType, key);
+            return (
+              <div key={key} className="flex items-baseline gap-2 text-[11px]">
+                <span className="text-gray-400 shrink-0">{key.replace(/_/g, ' ')}</span>
+                <span className="font-mono text-gray-600 shrink-0">{fmtNum(val)}</span>
+                {desc && (
+                  <span className="text-gray-400 text-[10px] truncate" title={desc}>
+                    — {desc}
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-function SuggestionsPanel({ suggestions }: { suggestions: Suggestion[] }) {
-  if (suggestions.length === 0) return null;
+// ---------------------------------------------------------------------------
+// Insight severity → visual styles
+// ---------------------------------------------------------------------------
+
+const INSIGHT_STYLES = {
+  important: {
+    bg: 'bg-amber-50 border-amber-200',
+    icon: <AlertTriangle className="w-4 h-4 text-amber-500" />,
+    titleColor: 'text-amber-800',
+  },
+  suggestion: {
+    bg: 'bg-blue-50 border-blue-200',
+    icon: <Lightbulb className="w-4 h-4 text-blue-500" />,
+    titleColor: 'text-blue-800',
+  },
+  info: {
+    bg: 'bg-gray-50 border-gray-200',
+    icon: <BookOpen className="w-4 h-4 text-gray-500" />,
+    titleColor: 'text-gray-800',
+  },
+} as const;
+
+function InsightsPanel({ insights }: { insights: Insight[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  if (insights.length === 0) return null;
 
   return (
     <div className="space-y-2">
       <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wider">
-        Insights
+        Educational Insights
       </h4>
-      {suggestions.map((s, i) => (
-        <div
-          key={i}
-          className={`flex items-start gap-2 px-3 py-2 rounded-lg text-sm ${
-            s.type === 'performance'
-              ? 'bg-amber-50 border border-amber-200'
-              : 'bg-blue-50 border border-blue-200'
-          }`}
-        >
-          {s.icon === 'alert' ? (
-            <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-          ) : (
-            <Lightbulb className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
-          )}
-          <div>
-            <p
-              className={`text-xs font-medium ${
-                s.type === 'performance' ? 'text-amber-800' : 'text-blue-800'
-              }`}
+      {insights.map((insight) => {
+        const style = INSIGHT_STYLES[insight.severity];
+        const isExpanded = expandedId === insight.id;
+
+        return (
+          <div
+            key={insight.id}
+            className={`rounded-lg border ${style.bg} overflow-hidden`}
+          >
+            <button
+              onClick={() => setExpandedId(isExpanded ? null : insight.id)}
+              className="w-full flex items-start gap-2 px-3 py-2 text-left"
             >
-              {s.message}
-            </p>
-            <p className="text-xs text-gray-600 mt-0.5">{s.detail}</p>
+              <span className="mt-0.5 flex-shrink-0">{style.icon}</span>
+              <div className="flex-1 min-w-0">
+                <p className={`text-xs font-medium ${style.titleColor}`}>
+                  {insight.title}
+                </p>
+                {!isExpanded && (
+                  <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">
+                    {insight.explanation}
+                  </p>
+                )}
+              </div>
+              <span className="text-gray-400 mt-0.5 flex-shrink-0">
+                {isExpanded ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </span>
+            </button>
+
+            {isExpanded && (
+              <div className="px-3 pb-3 space-y-2">
+                <p className="text-xs text-gray-700 leading-relaxed">
+                  {insight.explanation}
+                </p>
+                <div className="text-xs text-gray-600 bg-white/60 rounded px-2.5 py-2 border border-gray-100">
+                  <p className="font-medium text-gray-700 mb-0.5">Why this matters</p>
+                  <p className="leading-relaxed">{insight.whyItMatters}</p>
+                </div>
+                {insight.suggestion && (
+                  <div className="text-xs text-blue-700 bg-blue-50/50 rounded px-2.5 py-2 border border-blue-100">
+                    <p className="font-medium mb-0.5">Try this</p>
+                    <p className="leading-relaxed">{insight.suggestion}</p>
+                  </div>
+                )}
+                {insight.realWorldExample && (
+                  <div className="text-xs text-gray-600 italic border-l-2 border-gray-300 pl-2">
+                    {insight.realWorldExample}
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  {insight.learnMore && (
+                    <p className="text-[10px] text-gray-400 flex-1">
+                      Select the {insight.learnMore.blockType.replace(/_/g, ' ')} block and open the "Learn" tab for more details.
+                    </p>
+                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const ai = useAIStore.getState();
+                      if (!ai.panelOpen) ai.togglePanel();
+                      ai.sendMessage(`Tell me more about this insight: "${insight.title}" — ${insight.explanation}`);
+                    }}
+                    className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 shrink-0"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    Ask AI
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -473,13 +489,8 @@ function ExportMenu({ result }: { result: ExecutionResult }) {
 // ---------------------------------------------------------------------------
 
 export function MetricsDashboard() {
-  const { status, result, clearResults } = useExecutionStore();
+  const { status, result, insights, clearResults } = useExecutionStore();
   const [collapsed, setCollapsed] = useState(false);
-
-  const suggestions = useMemo(
-    () => (result ? generateSuggestions(result) : []),
-    [result],
-  );
 
   if (status !== 'complete' || !result) return null;
 
@@ -520,9 +531,9 @@ export function MetricsDashboard() {
             Execution Complete
           </span>
           <span className="text-xs text-gray-500">({fmtMs(result.duration)})</span>
-          {suggestions.length > 0 && (
+          {insights.length > 0 && (
             <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">
-              {suggestions.length} insight{suggestions.length > 1 ? 's' : ''}
+              {insights.length} insight{insights.length > 1 ? 's' : ''}
             </span>
           )}
         </div>
@@ -638,8 +649,8 @@ export function MetricsDashboard() {
             </div>
           )}
 
-          {/* Suggestions */}
-          <SuggestionsPanel suggestions={suggestions} />
+          {/* Educational Insights */}
+          <InsightsPanel insights={insights} />
         </div>
       )}
     </div>

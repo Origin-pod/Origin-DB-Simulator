@@ -14,6 +14,8 @@ import {
 import { isWASMReady } from '@/wasm/loader';
 import { SuggestionEngine } from '@/engine/suggestions';
 import type { EnrichedValidationResult } from '@/engine/suggestions';
+import { InsightEngine } from '@/engine/insights';
+import type { Insight } from '@/engine/insights';
 import { useCanvasStore } from './canvasStore';
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,7 @@ interface ExecutionState {
   validation: ValidationResult | null;
   enrichedValidation: EnrichedValidationResult | null;
   result: ExecutionResult | null;
+  insights: Insight[];
   error: string | null;
   engineType: EngineType;
 
@@ -86,6 +89,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   validation: null,
   enrichedValidation: null,
   result: null,
+  insights: [],
   error: null,
   engineType: isWASMReady() ? 'wasm' : 'mock',
 
@@ -144,12 +148,22 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
       const result = await engine.execute(nodes, edges, workload, onProgress);
 
       if (result.success) {
+        // Generate educational insights from execution results
+        const canvasState = useCanvasStore.getState();
+        const insightEngine = new InsightEngine(
+          canvasState.nodes,
+          canvasState.edges,
+          result,
+        );
+        const insights = insightEngine.analyze();
+
         set({
           status: 'complete',
           progress: 100,
           currentBlock: null,
           progressMessage: 'Done!',
           result,
+          insights,
         });
       } else {
         set({
@@ -190,6 +204,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
       validation: null,
       enrichedValidation: null,
       result: null,
+      insights: [],
       error: null,
     });
   },

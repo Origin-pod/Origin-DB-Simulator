@@ -15,6 +15,7 @@ import {
   Loader2,
   CheckCircle2,
   Cloud,
+  Sparkles,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -24,6 +25,7 @@ import { useDesignStore } from '@/stores/designStore';
 import type { BlockNodeData } from '@/types';
 import { exportDesign, validateImport, downloadFile } from '@/lib/persistence';
 import { toast } from '@/stores/toastStore';
+import { useAIStore } from '@/stores/aiStore';
 
 interface TopBarProps {
   onOpenComparison: () => void;
@@ -272,6 +274,15 @@ export function TopBar({ onOpenComparison, onOpenTemplates }: TopBarProps) {
             {engineType === 'wasm' ? 'WASM' : 'Mock'}
           </span>
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => useAIStore.getState().togglePanel()}
+          title="AI Teaching Assistant"
+        >
+          <Sparkles className="w-4 h-4" />
+          AI Assist
+        </Button>
         <Button
           variant="secondary"
           size="sm"

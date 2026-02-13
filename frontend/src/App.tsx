@@ -16,6 +16,8 @@ import { ComparisonView } from '@/components/comparison/ComparisonView';
 import { TemplateModal } from '@/components/templates/TemplateModal';
 import { OnboardingTutorial } from '@/components/onboarding/OnboardingTutorial';
 import { ToastContainer } from '@/components/ui/ToastContainer';
+import { AITeachingPanel } from '@/components/ai/AITeachingPanel';
+import { AISettingsModal } from '@/components/ai/AISettingsModal';
 
 function App() {
   const [comparisonOpen, setComparisonOpen] = useState(false);
@@ -62,6 +64,8 @@ function App() {
         onClose={() => setTemplatesOpen(false)}
       />
       <OnboardingTutorial onOpenTemplates={openTemplates} />
+      <AITeachingPanel />
+      <AISettingsModal />
       <ToastContainer />
     </ReactFlowProvider>
   );
